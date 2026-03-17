@@ -2,10 +2,10 @@
 
 ## Project Session Management
 
-This environment uses `dev` - a session manager for projects in `~/projects/`.
+This environment uses `dev` - a session manager for projects in `<projects-dir>/`.
 
 **Key concepts:**
-- Projects use git worktrees: `~/projects/<repo>/<worktree>/` (e.g., `~/projects/replay/main/`)
+- Projects use git worktrees: `<projects-dir>/<repo>/<worktree>/` (e.g., `<projects-dir>/replay/main/`)
 - Sessions use `_` separator internally but you type `/` (e.g., `dev replay/main/pi`)
 - Sub-sessions like `pi`, `server`, `tests` keep long-running processes separate
 - Use `/pi` for worktree agents (avoid `/claude` for worktree agent sessions)
@@ -14,9 +14,10 @@ This environment uses `dev` - a session manager for projects in `~/projects/`.
 ```bash
 dev                           # List active sessions
 dev ls --full                 # Full project tree
-dev <repo>                    # Create detached if new, attach if exists
+dev <repo>/main/claude        # Orchestrator session (worktree-based repos)
+dev <repo>                    # Orchestrator session (regular repos — starts Claude)
 
-dev <repo>/<worktree>/pi      # Create detached if new, attach if exists
+dev <repo>/<worktree>/pi      # Implementer session (starts Pi)
 dev wt <repo> <branch>        # Add worktree + start pi in /pi sub-session (detached)
 dev cleanup <repo>/<worktree> # Remove worktree + branch + all sessions
 dev kill <session>            # Kill a session
@@ -61,21 +62,41 @@ Worktree branches are local by default. You do **not** need to push them to remo
 **Your role depends on which worktree you're in:**
 
 ### If you're in `main` worktree → You're the orchestrator
-- Explore codebase, plan features
-- Create worktrees for new features: `dev wt <repo> <feature>` (pi starts detached in `/pi` sub-session)
-- After features complete: merge locally, then full cleanup:
-  ```bash
-  # Merge the feature branch locally
-  cd ~/projects/<repo>/main
-  git merge <feature>
 
-  # 1. Kill Docker environment for the feature
-  COMPOSE_PROJECT_NAME=<repo>-<feature> docker compose down -v
+**CRITICAL: Never implement features directly in main. Always delegate to worktree agents.**
 
-  # 2. Remove worktree + branch + all sessions
-  dev cleanup <repo>/<feature>
-  ```
-- You manage the big picture
+Your job is planning, quality, delegation, and integration. Follow this sequence:
+
+1. **Plan** — Read the spec/issue, enter plan mode, design the worktree breakdown
+2. **Quality gates** — For new projects, run `/repo-quality-rails-setup` before any delegation. Commit hooks to main so worktree agents inherit them.
+3. **Delegate** — Create worktrees and send work to Pi agents:
+   ```bash
+   dev wt <repo> <feature>
+   dev send-pi <repo>/<feature>/pi "instructions"
+   ```
+   Use `/prompting-worktree-agents` for non-trivial tasks to make agents reason before coding.
+
+   **Every go-ahead message to a Pi agent MUST include:**
+   > "Before reporting done, run `codex review --base main` and fix any issues it finds."
+
+4. **Monitor** — Check progress, respond to agent questions:
+   ```bash
+   dev pi-status <repo>/<feature>/pi --messages 1
+   dev queue-status <repo>/<feature>/pi -m
+   ```
+5. **Review & merge** — Only after agent confirms completion and codex review:
+   ```bash
+   dev pi-status <repo>/<feature>/pi --messages 1  # confirm done + codex review passed
+   # If issues: dev send-pi <repo>/<feature>/pi "fix X"
+   # If clean: merge
+   cd <projects-dir>/<repo>/main
+   git merge --quiet <feature>
+   ```
+6. **Cleanup** — After merge:
+   ```bash
+   COMPOSE_PROJECT_NAME=<repo>-<feature> docker compose down -v
+   dev cleanup <repo>/<feature>
+   ```
 
 ### If you're in a feature worktree → You're the implementer
 - Focus on implementing the feature
@@ -84,6 +105,26 @@ Worktree branches are local by default. You do **not** need to push them to remo
 - Don't worry about worktree cleanup - main handles that
 
 For full documentation, use the `/dev` skill.
+
+## New Project Bootstrap (no remote repo)
+
+For brand new projects with no remote, create the worktree-based repo structure manually:
+
+```bash
+# 1. Create bare repo with initial commit
+mkdir -p <projects-dir>/<repo>/tmp && cd <projects-dir>/<repo>/tmp
+git init -b main && echo "# <repo>" > README.md && git add README.md && git commit --quiet -m "initial commit"
+
+# 2. Clone as bare repo, clean up
+cd <projects-dir>/<repo> && git clone --bare tmp/.git .bare && rm -rf tmp
+
+# 3. Remove stale origin and create main worktree
+cd .bare && git remote remove origin && git worktree add ../main main
+```
+
+Then start the orchestrator: `dev <repo>/main/claude`
+
+**Entry point clarification:** For worktree-based repos, `dev <repo>` starts Pi (implementer), not Claude. The orchestrator session is always `dev <repo>/main/claude`.
 
 ## Isolated Development Environments
 
@@ -207,7 +248,7 @@ The replay monorepo runs databases and services locally via Docker/Podman contai
 # /opt/podman/bin/podman machine rm
 
 # Start databases from the repo root
-cd ~/projects/replay/main
+cd <projects-dir>/replay/main
 /opt/podman/bin/podman compose up -d postgres redis
 
 # Verify databases are running
@@ -269,6 +310,15 @@ echo "Submit this? (user must explicitly confirm)"
 ```
 
 This applies to ANY write operation against trading/ops APIs.
+
+## Compact Instructions
+
+When summarizing this conversation for context compaction, always preserve:
+- **Orchestrator state**: which worktrees exist, their current status (implementing / awaiting review / fix requested / ready to merge / merged), and what action is next for each
+- **Review pipeline**: codex review verdicts per worktree, what issues were found, what fixes were requested, what's still pending
+- **Merge order**: the planned sequence and any blocking dependencies between worktrees
+- **Agent messages**: the last meaningful status from each Pi agent (done, fixing, blocked, etc.)
+- **Quality gates**: whether hooks/linting/CI are set up, and any failures encountered
 
 ## Git Preferences
 

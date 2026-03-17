@@ -20,12 +20,15 @@ pull the latest, symlink everything into place, and install Pi extensions.
 | cashew launcher | `/usr/local/bin/cashew` → `bin/cashew` | tmux + fzf TUI launcher |
 | Global Claude config | `~/.claude/CLAUDE.md` | Cashew context block appended |
 | /dev command | `~/.claude/commands/dev.md` → `claude/commands/dev.md` | Session manager docs |
+| /codex-review command | `~/.claude/commands/codex-review.md` → `claude/commands/codex-review.md` | Codex CLI code review |
 | /prompting-worktree-agents | `~/.claude/skills/prompting-worktree-agents/` → `claude/skills/prompting-worktree-agents/` | Socratic prompting for worktree agents |
 | /repo-quality-rails-setup | `~/.claude/skills/repo-quality-rails-setup/` → `claude/skills/repo-quality-rails-setup/` | Optional quality rails setup |
 | Pi extensions | `~/.pi/agent/extensions/` → `pi/extensions/` | message-queue, pi-subscribe, kw-role |
 | Projects folder | `~/<user-choice>` | Where all projects live |
 
 Everything is symlinked back to this repo. `git pull` updates the whole machine.
+The chosen projects folder should also be exported via `CASHEW_PROJECTS_DIR` so
+agents and `dev` agree on the same path.
 
 ## Step 1: Ask the User
 
@@ -44,6 +47,15 @@ git pull
 
 ```bash
 mkdir -p ~/<projects-folder>
+```
+
+Persist the projects directory in your shell config so `dev` and agents use the
+same path:
+
+```bash
+grep -q 'CASHEW_PROJECTS_DIR=' ~/.zshrc 2>/dev/null || \
+  echo 'export CASHEW_PROJECTS_DIR="$HOME/<projects-folder>"' >> ~/.zshrc
+export CASHEW_PROJECTS_DIR="$HOME/<projects-folder>"
 ```
 
 ## Step 4: Symlink Binaries
@@ -71,13 +83,16 @@ if ! grep -q "BEGIN CASHEW GLOBAL CONTEXT" "$TARGET" 2>/dev/null; then
   {
     echo ""
     echo "<!-- BEGIN CASHEW GLOBAL CONTEXT -->"
-    sed "s|<cashew-root>|$CASHEW_ROOT|g" "$CASHEW_ROOT/claude/global/CLAUDE.md"
+    sed -e "s|<cashew-root>|$CASHEW_ROOT|g" \
+        -e "s|<projects-dir>|$CASHEW_PROJECTS_DIR|g" \
+        "$CASHEW_ROOT/claude/global/CLAUDE.md"
     echo "<!-- END CASHEW GLOBAL CONTEXT -->"
   } >> "$TARGET"
 fi
 
-# Global command
+# Global commands
 ln -sf "$CASHEW_ROOT/claude/commands/dev.md" ~/.claude/commands/dev.md
+ln -sf "$CASHEW_ROOT/claude/commands/codex-review.md" ~/.claude/commands/codex-review.md
 
 # Global skills
 ln -sf "$CASHEW_ROOT/claude/skills/prompting-worktree-agents" ~/.claude/skills/prompting-worktree-agents
@@ -107,8 +122,21 @@ mkdir -p ~/.pi/agent/extensions
 ln -sf "$CASHEW_ROOT/pi/extensions/message-queue.ts" ~/.pi/agent/extensions/message-queue.ts
 ln -sf "$CASHEW_ROOT/pi/extensions/pi-subscribe.ts" ~/.pi/agent/extensions/pi-subscribe.ts
 ln -sf "$CASHEW_ROOT/pi/extensions/kw-role.ts" ~/.pi/agent/extensions/kw-role.ts
-ln -sf "$CASHEW_ROOT/pi/extensions/pi-web-access-wrapper.ts" ~/.pi/agent/extensions/pi-web-access-wrapper.ts
 ```
+
+## Step 7: Install Codex CLI
+
+Codex CLI is used by `/codex-review` for AI-powered second-pass code review.
+If `codex` isn't on the PATH, install it.
+
+```bash
+# Install Codex CLI if missing
+command -v codex || npm install -g @openai/codex
+```
+
+Codex requires an `OPENAI_API_KEY` in the environment. If the user doesn't
+have one, note that `/codex-review` will be unavailable until they set it up,
+but everything else works fine without it.
 
 ## Optional: Web Search for Pi
 
@@ -116,24 +144,30 @@ Consider installing [pi-web-access](https://github.com/nicobailon/pi-web-access/
 
 ```bash
 pi install npm:pi-web-access
-# add keys to ~/.pi/web-search.json (perplexityApiKey and/or geminiApiKey)
-# load via wrapper for reliable /reload
-ln -sf "$CASHEW_ROOT/pi/extensions/pi-web-access-wrapper.ts" ~/.pi/agent/extensions/pi-web-access-wrapper.ts
+cat > ~/.pi/web-search.json <<'EOF'
+{
+  "provider": "perplexity"
+}
+EOF
+# pi-web-access reads PERPLEXITY_API_KEY from the environment, or you can put
+# "perplexityApiKey" directly in ~/.pi/web-search.json
 ```
 
-## Step 7: Verify
+## Step 8: Verify
 
 Report what passed/failed — don't run silently.
 
 ```bash
 dev --help
 pi --version
+codex --version || echo "Codex CLI not installed — /codex-review will be unavailable"
 ls -l ~/.pi/agent/extensions/
 ls -l ~/.claude/commands/dev.md
+ls -l ~/.claude/commands/codex-review.md
 ls -l ~/.claude/skills/prompting-worktree-agents
 ```
 
-## Step 8: Tell the User What to Do Next
+## Step 9: Tell the User What to Do Next
 
 After verification, walk the user through how to start using Cashew:
 

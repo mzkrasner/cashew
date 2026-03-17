@@ -22,6 +22,7 @@ A dev-environment bootstrap that ships Claude skills/commands plus a `dev` sessi
 - This repo contains: a `dev` CLI, Claude skills/commands, and a Pi extension.
 - `dev` creates **tmux** sessions by default.
 - Worktrees are stored at `~/Projects/<repo>/<worktree>`; bare repos live at `~/Projects/<repo>/.bare`.
+- If you choose a different projects folder during setup, export it as `CASHEW_PROJECTS_DIR` so `dev` and agent instructions agree on the same path.
 
 **Assumed (defaults, not rules)**
 - Claude is used for orchestration at the projects root and repo roots.
@@ -219,7 +220,8 @@ cashew/
 │   ├── global/
 │   │   └── CLAUDE.md            # Global context for all Claude sessions
 │   ├── commands/
-│   │   └── dev.md               # /dev command
+│   │   ├── dev.md               # /dev command
+│   │   └── codex-review.md      # /codex-review command
 │   └── skills/
 │       ├── prompting-worktree-agents/
 │       │   └── SKILL.md         # Socratic prompting loop for worktree agents
@@ -229,7 +231,8 @@ cashew/
 │   ├── global/
 │   │   └── CLAUDE.md            # Global context for all Claude sessions
 │   └── commands/
-│       └── dev.md               # /dev command
+│       ├── dev.md               # /dev command
+│       └── codex-review.md      # /codex-review command
 └── pi/
     └── extensions/
         └── message-queue.ts     # Queue integration for Pi

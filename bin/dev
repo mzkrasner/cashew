@@ -2,8 +2,8 @@
 # dev - Project session manager with git worktree support
 #
 # Structure supported:
-#   ~/projects/<repo>/<worktree>/     - git worktrees
-#   ~/projects/<repo>/                - regular repos
+#   <projects-root>/<repo>/<worktree>/     - git worktrees
+#   <projects-root>/<repo>/                - regular repos
 #
 # Session naming uses "_" separator (internal session names don't allow "/"):
 #   repo_worktree_sub  maps to  repo/worktree/sub in commands
@@ -13,15 +13,15 @@
 #   dev <repo>                       - Attach to repo's main/default session
 #   dev <repo>/<worktree>            - Attach to a specific worktree session
 #   dev <repo>/<worktree>/<sub>      - Attach to sub-session (prefer /pi for worktrees)
-#   dev hub                          - Attach to hub session at ~/projects root
+#   dev hub                          - Attach to hub session at projects root
 #   dev hub/<sub>                    - Attach to hub sub-session (e.g., hub/claude)
 #   dev new <repo> <url>             - Clone repo as bare + create main worktree
 #   dev wt <repo> <branch> [base]    - Add a worktree for a branch
 #   dev kill <session>               - Kill a specific session
 #   dev kill-all                     - Kill all sessions
 
-PROJECTS_DIR="$HOME/projects"  # Set by /setup skill during installation
-if [ -d "$HOME/Projects" ]; then
+PROJECTS_DIR="${CASHEW_PROJECTS_DIR:-$HOME/projects}"
+if [ -z "${CASHEW_PROJECTS_DIR:-}" ] && [ -d "$HOME/Projects" ]; then
     PROJECTS_DIR="$HOME/Projects"
 fi
 SEP="_"  # Session name separator (internal session names don't allow /)
@@ -476,6 +476,18 @@ attach_session() {
     backend=$(session_backend "$session_name")
 
     if [ "$backend" = "tmux" ]; then
+        # If the agent process has exited (pane is at a shell prompt), restart it
+        if [ ${#auto_command[@]} -gt 0 ]; then
+            local pane_cmd
+            pane_cmd=$(tmux display-message -t "$session_name" -p '#{pane_current_command}' 2>/dev/null || true)
+            local agent_name="${auto_command[0]}"
+            # Shell means the agent exited — restart it
+            if [[ "$pane_cmd" == "zsh" || "$pane_cmd" == "bash" || "$pane_cmd" == "sh" || "$pane_cmd" == "fish" ]]; then
+                echo -e "${YELLOW}Agent ($agent_name) not running — restarting...${RESET}"
+                local cmd_line="${auto_command[*]}"
+                tmux send-keys -t "$session_name" "$cmd_line" C-m
+            fi
+        fi
         tmux attach -t "$session_name"
         return
     fi
@@ -484,6 +496,13 @@ attach_session() {
     if [ -z "$sub" ] && [ -d "$repo_dir/.bare" ]; then
         local pi_sub="${session_name}${SEP}pi"
         if [ "$(session_backend "$pi_sub")" = "tmux" ]; then
+            # Check if pi agent is still running
+            local pane_cmd
+            pane_cmd=$(tmux display-message -t "$pi_sub" -p '#{pane_current_command}' 2>/dev/null || true)
+            if [[ "$pane_cmd" == "zsh" || "$pane_cmd" == "bash" || "$pane_cmd" == "sh" || "$pane_cmd" == "fish" ]]; then
+                echo -e "${YELLOW}Agent (pi) not running — restarting...${RESET}"
+                tmux send-keys -t "$pi_sub" "pi" C-m
+            fi
             echo -e "Attaching to existing pi sub-session: ${GREEN}$(to_display_name "$pi_sub")${RESET}"
             tmux attach -t "$pi_sub"
             return
@@ -1243,7 +1262,7 @@ pi_gh_assign() {
 
     if [ -z "$session" ]; then
         echo "Unable to infer session from cwd ($PWD)."
-        echo "Run from inside ~/projects/<repo>/<worktree>/, or use dev send-pi directly."
+        echo "Run from inside <projects-root>/<repo>/<worktree>/, or use dev send-pi directly."
         exit 1
     fi
 
@@ -2531,6 +2550,17 @@ hub_session() {
     backend=$(session_backend "$session_name")
 
     if [ "$backend" = "tmux" ]; then
+        # If the agent process has exited (pane is at a shell prompt), restart it
+        if [ ${#auto_command[@]} -gt 0 ]; then
+            local pane_cmd
+            pane_cmd=$(tmux display-message -t "$session_name" -p '#{pane_current_command}' 2>/dev/null || true)
+            local agent_name="${auto_command[0]}"
+            if [[ "$pane_cmd" == "zsh" || "$pane_cmd" == "bash" || "$pane_cmd" == "sh" || "$pane_cmd" == "fish" ]]; then
+                echo -e "${YELLOW}Agent ($agent_name) not running — restarting...${RESET}"
+                local cmd_line="${auto_command[*]}"
+                tmux send-keys -t "$session_name" "$cmd_line" C-m
+            fi
+        fi
         tmux attach -t "$session_name"
         return
     fi
@@ -2631,7 +2661,7 @@ case "${1:-}" in
         echo "Commands:"
         echo "  dev                           List active sessions"
         echo "  dev ls [--full]              List active sessions (or full project tree)"
-        echo "  dev hub                       Attach to hub session at ~/projects root"
+        echo "  dev hub                       Attach to hub session at projects root"
         echo "  dev hub/<sub>                 Hub sub-session (e.g., hub/claude)"
         echo "  dev <repo>                    Attach to default worktree/session"
         echo "  dev <repo>/<worktree>         Attach to specific worktree"
@@ -2659,7 +2689,7 @@ case "${1:-}" in
         echo "  dev reboot [--dry-run]        Recreate baseline sessions after reboot"
         echo ""
         echo "Examples:"
-        echo "  dev hub                       # root session at ~/projects"
+        echo "  dev hub                       # root session at projects root"
         echo "  dev ls --full                 # full project tree"
         echo "  dev hub/claude                # claude session at root"
         echo "  dev new myapp git@github.com:user/myapp"
