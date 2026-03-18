@@ -77,19 +77,25 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
    Use `/prompting-worktree-agents` for non-trivial tasks to make agents reason before coding.
 
    **Every go-ahead message to a Pi agent MUST include:**
-   > "Before reporting done, run `codex review --base main` and fix any issues it finds."
+   > "When done: commit all changes, run `codex review --base main`, fix any issues, commit the fixes, then report done with your commit hash."
 
-4. **Monitor** — Check progress, respond to agent questions:
+4. **Monitor** — After delegating, **immediately enter an autonomous polling loop**. Do NOT wait for the user to ask for status. Poll every 2-3 minutes until all worktrees are merged:
    ```bash
+   # Check each active worktree agent
    dev pi-status <repo>/<feature>/pi --messages 1
-   dev queue-status <repo>/<feature>/pi -m
    ```
-5. **Review & merge** — Only after agent confirms completion and codex review:
+   On each poll:
+   - If agent reports done → verify commit exists (`git log` in worktree), then proceed to step 5
+   - If agent reports done but didn't commit → tell it to commit
+   - If agent is stuck or idle for 10+ minutes → nudge with a status check
+   - If agent asks a question → answer it
+   Between polls, use `sleep 120` or `sleep 180`. **Never stop polling until all worktrees are merged and cleaned up.**
+
+5. **Review & merge** — Only after agent confirms completion, has committed, and codex review passed:
    ```bash
-   dev pi-status <repo>/<feature>/pi --messages 1  # confirm done + codex review passed
+   cd <projects-dir>/<repo>/main && git log --oneline <feature> -3  # verify commits exist
    # If issues: dev send-pi <repo>/<feature>/pi "fix X"
    # If clean: merge
-   cd <projects-dir>/<repo>/main
    git merge --quiet <feature>
    ```
 6. **Cleanup** — After merge:
