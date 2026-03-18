@@ -126,6 +126,13 @@ Then start the orchestrator: `dev <repo>/main/claude`
 
 **Entry point clarification:** For worktree-based repos, `dev <repo>` starts Pi (implementer), not Claude. The orchestrator session is always `dev <repo>/main/claude`.
 
+**IMPORTANT: Always use `dev new` for repos you'll orchestrate.** Regular `git clone` creates a non-worktree repo where `dev wt` won't work. If a repo was cloned normally, re-create it:
+```bash
+# Remove the regular clone and re-create as worktree-based
+rm -rf <projects-dir>/<repo>
+dev new <repo> <git-ssh-url>
+```
+
 ## Isolated Development Environments
 
 **Run EVERYTHING in Docker** - app, services, tests, CI. The entire dev environment is containerized per worktree.
