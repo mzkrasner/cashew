@@ -93,10 +93,16 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
 
 5. **Review & merge** — Only after agent confirms completion, has committed, and codex review passed:
    ```bash
-   cd <projects-dir>/<repo>/main && git log --oneline <feature> -3  # verify commits exist
-   # If issues: dev send-pi <repo>/<feature>/pi "fix X"
-   # If clean: merge
+   # CRITICAL: verify the branch has NEW commits beyond main
+   git log --oneline main..<feature>
+   # If this output is EMPTY → the agent did NOT commit. Do NOT merge.
+   # Tell the agent: "Your branch has no commits. Commit your changes."
+
+   # Only if commits exist:
    git merge --quiet <feature>
+
+   # After merge, verify HEAD actually moved:
+   git log --oneline -1  # should show the feature's commit, not the old HEAD
    ```
 6. **Cleanup** — After merge:
    ```bash
