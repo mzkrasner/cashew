@@ -343,17 +343,30 @@ All commits must use conventional commit format: `type(scope): message`
 - **Types:** `feat`, `fix`, `chore`, `test`, `perf`, `docs`, `refactor`, `ci`, `build`, `style`
 - **Scope:** the package, module, or area affected (e.g., `scanner`, `execution`, `sum-to-one`)
 - **Message:** imperative mood, lowercase, no trailing period, descriptive of the actual change
-- Keep the first line under 72 characters
-- Use the body for details when the subject line isn't enough
+- Keep the subject line under 72 characters
+- For non-trivial changes, include a structured body:
+
+```
+type(scope): subject line
+
+## Summary
+1-3 sentences explaining what changed and why at a high level.
+
+## Changes
+- bullet list of specific changes made
+
+## Why
+Motivation — what problem, incident, or goal drove this change.
+Omit if obvious from the summary.
+
+## Testing
+How the change was verified (test commands, test counts, manual checks).
+```
+
+- For small changes (one-liners, config tweaks, version bumps), the subject line alone is fine
+- Always include `## Summary` at minimum for multi-file changes
 
 ```bash
-# ✅ Good
-git commit --quiet -m "feat(sum-to-one): GTC limit order recovery for unfilled basket legs"
-git commit --quiet -m "fix(execution): remove hardcoded tickSize/feeRateBps causing VALIDATION_ERROR"
-git commit --quiet -m "perf(sum-to-one): tick-size prewarm, parallel refresh, parallel pagination"
-git commit --quiet -m "test(sum-to-one): add market discovery comparison harness"
-git commit --quiet -m "chore(deps): bump drizzle-kit to 0.22"
-
 # ❌ Bad
 git commit -m "Fixed the bug"
 git commit -m "Add feature"
