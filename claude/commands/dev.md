@@ -45,6 +45,7 @@ dev <repo>                       # Open main session for a repo
 dev <repo>/<worktree>            # Open specific worktree (for worktree-based repos)
 dev <repo>/<worktree>/<sub>      # Open sub-session (prefer /pi for worktrees)
 dev new <repo> <git-url>         # Clone repo with worktree structure
+dev init <repo>                  # Create new local repo with worktree structure (no remote)
 dev wt <repo> <branch> [base]    # Add a new worktree for a branch
 dev cleanup <repo>/<worktree>    # Remove worktree + branch + session (requires --force if unmerged)
 dev kill <session>               # Kill a specific session
@@ -112,8 +113,9 @@ dev hub/claude               # claude session for managing projects
 
 ### Starting a new project
 ```bash
-dev new myapp git@github.com:user/myapp
-dev myapp                    # opens main worktree
+dev new myapp git@github.com:user/myapp    # from existing remote
+dev init myapp                              # brand new, no remote
+dev myapp                                   # opens main worktree
 ```
 
 ### Working on a feature branch

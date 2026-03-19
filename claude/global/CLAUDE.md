@@ -118,29 +118,21 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
 
 For full documentation, use the `/dev` skill.
 
-## New Project Bootstrap (no remote repo)
-
-For brand new projects with no remote, create the worktree-based repo structure manually:
+## New Project Bootstrap
 
 ```bash
-# 1. Create bare repo with initial commit
-mkdir -p <projects-dir>/<repo>/tmp && cd <projects-dir>/<repo>/tmp
-git init -b main && echo "# <repo>" > README.md && git add README.md && git commit --quiet -m "initial commit"
-
-# 2. Clone as bare repo, clean up
-cd <projects-dir>/<repo> && git clone --bare tmp/.git .bare && rm -rf tmp
-
-# 3. Remove stale origin and create main worktree
-cd .bare && git remote remove origin && git worktree add ../main main
+dev new <repo> <git-ssh-url>   # Clone existing remote with worktree structure
+dev init <repo>                # Create new local repo with worktree structure (no remote)
 ```
 
 Then start the orchestrator: `dev <repo>/main/claude`
 
+To add a remote later: `cd <projects-dir>/<repo>/main && git remote add origin <git-ssh-url>`
+
 **Entry point clarification:** For worktree-based repos, `dev <repo>` starts Pi (implementer), not Claude. The orchestrator session is always `dev <repo>/main/claude`.
 
-**IMPORTANT: Always use `dev new` for repos you'll orchestrate.** Regular `git clone` creates a non-worktree repo where `dev wt` won't work. If a repo was cloned normally, re-create it:
+**IMPORTANT: Always use `dev new` or `dev init` for repos you'll orchestrate.** Regular `git clone` creates a non-worktree repo where `dev wt` won't work. If a repo was cloned normally, re-create it:
 ```bash
-# Remove the regular clone and re-create as worktree-based
 rm -rf <projects-dir>/<repo>
 dev new <repo> <git-ssh-url>
 ```

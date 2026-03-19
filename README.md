@@ -73,7 +73,8 @@ Checksum: **`dev` is a session/worktree manager with sane defaults; it is not a 
 
 Example (what Claude runs):
 ```bash
-dev new myapp git@github.com:user/myapp
+dev new myapp git@github.com:user/myapp    # from existing remote
+dev init myapp                              # or create from scratch (no remote)
 dev wt myapp feature-auth
 ```
 

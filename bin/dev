@@ -16,6 +16,7 @@
 #   dev hub                          - Attach to hub session at projects root
 #   dev hub/<sub>                    - Attach to hub sub-session (e.g., hub/claude)
 #   dev new <repo> <url>             - Clone repo as bare + create main worktree
+#   dev init <repo>                  - Create new local repo with worktree structure
 #   dev wt <repo> <branch> [base]    - Add a worktree for a branch
 #   dev kill <session>               - Kill a specific session
 #   dev kill-all                     - Kill all sessions
@@ -555,6 +556,51 @@ new_project() {
     default_branch=$(git --git-dir=.bare symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
     git --git-dir=.bare worktree add main "$default_branch"
+
+    echo ""
+    echo -e "${GREEN}Project created!${RESET}"
+    echo ""
+    echo "Structure:"
+    echo "  $PROJECTS_DIR/$name/"
+    echo "  ├── .bare/     (git data)"
+    echo "  └── main/      (default branch worktree)"
+    echo ""
+    echo "Commands:"
+    echo "  dev $name/main/pi            # create or attach pi sub-session"
+    echo "  dev $name/main/claude        # claude sub-session"
+    echo "  dev wt $name feature-x       # add feature-x worktree (pi starts detached)"
+}
+
+init_project() {
+    local name="$1"
+
+    if [ -z "$name" ]; then
+        echo "Usage: dev init <project-name>"
+        exit 1
+    fi
+
+    local project_dir="$PROJECTS_DIR/$name"
+
+    if [ -d "$project_dir" ]; then
+        echo "Project already exists: $project_dir"
+        exit 1
+    fi
+
+    echo "Initializing worktree-based repo..."
+    mkdir -p "$project_dir/tmp"
+    cd "$project_dir/tmp"
+    git init -b main --quiet
+    echo "# $name" > README.md
+    git add README.md
+    git commit --quiet -m "initial commit"
+
+    cd "$project_dir"
+    git clone --bare tmp/.git .bare --quiet
+    rm -rf tmp
+
+    cd .bare
+    git remote remove origin 2>/dev/null
+    git worktree add ../main main --quiet
 
     echo ""
     echo -e "${GREEN}Project created!${RESET}"
@@ -2592,6 +2638,9 @@ case "${1:-}" in
         ;;
     "new")
         new_project "$2" "$3"
+        ;;
+    "init")
+        init_project "$2"
         ;;
     "wt"|"worktree")
         add_worktree "$2" "$3" "$4"
