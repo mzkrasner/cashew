@@ -67,7 +67,7 @@ Worktree branches are local by default. You do **not** need to push them to remo
 
 Your job is planning, quality, delegation, and integration. Follow this sequence:
 
-1. **Plan** — Read the spec/issue, enter plan mode, design the worktree breakdown
+1. **Plan** — Read the spec/issue, enter plan mode, design the worktree breakdown. If the repo has a remote, check `gh issue list` for open issues relevant to the current work.
 2. **Quality gates** — For new projects, run `/repo-quality-rails-setup` before any delegation. Commit hooks to main so worktree agents inherit them.
 3. **Delegate** — Create worktrees and send work to Pi agents:
    ```bash
@@ -77,7 +77,7 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
    Use `/prompting-worktree-agents` for non-trivial tasks to make agents reason before coding.
 
    **Every go-ahead message to a Pi agent MUST include:**
-   > "When done: commit all changes using conventional commit format (type(scope): message) with a structured body. Include `Co-Authored-By: Codex <noreply@openai.com>` as the last line of every commit. Run `codex review --base main`, fix any issues, commit the fixes, then report done with your commit hash."
+   > "When done: commit all changes using conventional commit format (type(scope): message) with a structured body. Include `Co-Authored-By: Codex <noreply@openai.com>` as the last line of every commit. If this work addresses a GitHub issue, reference it in the commit (e.g., `refs #42`). Run `codex review --base main`, fix any issues, commit the fixes, then report done with your commit hash."
 
 4. **Monitor** — After delegating, **immediately enter an autonomous polling loop**. Do NOT wait for the user to ask for status. Poll every 2-3 minutes until all worktrees are merged:
    ```bash
@@ -109,6 +109,7 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
    COMPOSE_PROJECT_NAME=<repo>-<feature> docker compose down -v
    dev cleanup <repo>/<feature>
    ```
+7. **End-of-session triage** (only if repo has a remote) — Spend 2-5 minutes on `gh issue list`. Close anything resolved by merged work. Label remaining issues. This is not a formal process — just a quick scan to keep the backlog honest.
 
 **Small direct changes in main** — For trivial fixes (config tweaks, version bumps, typos) that don't warrant a worktree, the orchestrator may commit directly in main. The same quality bar applies:
 1. Make the change
@@ -336,6 +337,45 @@ When summarizing this conversation for context compaction, always preserve:
 - **Merge order**: the planned sequence and any blocking dependencies between worktrees
 - **Agent messages**: the last meaningful status from each Pi agent (done, fixing, blocked, etc.)
 - **Quality gates**: whether hooks/linting/CI are set up, and any failures encountered
+
+## Issue Tracking (optional — requires remote repo)
+
+**All issue tracking is conditional on the repo having a GitHub remote.** Check with `git remote get-url origin` before any `gh` command. If there is no remote, skip all issue tracking silently — never fail, never warn, never create a remote.
+
+### When to create an issue
+
+| Situation | Action |
+|-----------|--------|
+| Bug/task discovered and fixed immediately in the same session (small, local) | No issue needed |
+| Bug/task discovered but deferred, cross-cutting, scope-expanding, unclear owner, or recurring | Create issue: `gh issue create --title "..." --label bug` |
+| User explicitly reports something | Always create issue |
+
+**The rule:** issue required for anything that might be forgotten, debated, deferred, or handed off. If it's fixed right now and the fix is obvious, skip the issue.
+
+### Issue references in commits
+
+When work addresses an existing issue, reference it:
+- Commit subject: `fix(grading): truncate feedback to 3 sentences refs #42`
+- PR body: `Closes #42` or `Refs #42`
+- Branch naming (optional): `fix/42-grading-validation`
+
+This is soft discipline — don't block work on minting an issue number. But if an issue exists, reference it.
+
+### Labels (minimal set)
+
+Set up once per repo. Only these:
+- **Type:** `bug`, `task`, `debt`
+- **Status:** `triage`, `ready`, `blocked`
+- **Optional:** `agent-found` (discovered by an agent mid-session, not human-reported)
+
+No priority matrices, no severity levels, no story points. If you stop maintaining labels, you have too many.
+
+### Mid-session issue discovery
+
+When the orchestrator or an agent discovers a bug/task during active work:
+1. If it can be fixed right now as part of the current worktree — just fix it, no issue
+2. If it's out of scope for the current worktree — create an issue immediately so it isn't lost
+3. Never ask an agent to create issues — the orchestrator owns issue creation
 
 ## Git Preferences
 
