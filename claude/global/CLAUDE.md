@@ -336,6 +336,31 @@ When summarizing this conversation for context compaction, always preserve:
 - Never use HTTPS URLs which require interactive authentication
 - ALWAYS run `git commit`, `git merge`, and `git push` with `--quiet` flag
 
+### Commit Style (Conventional Commits)
+
+All commits must use conventional commit format: `type(scope): message`
+
+- **Types:** `feat`, `fix`, `chore`, `test`, `perf`, `docs`, `refactor`, `ci`, `build`, `style`
+- **Scope:** the package, module, or area affected (e.g., `scanner`, `execution`, `sum-to-one`)
+- **Message:** imperative mood, lowercase, no trailing period, descriptive of the actual change
+- Keep the first line under 72 characters
+- Use the body for details when the subject line isn't enough
+
+```bash
+# ✅ Good
+git commit --quiet -m "feat(sum-to-one): GTC limit order recovery for unfilled basket legs"
+git commit --quiet -m "fix(execution): remove hardcoded tickSize/feeRateBps causing VALIDATION_ERROR"
+git commit --quiet -m "perf(sum-to-one): tick-size prewarm, parallel refresh, parallel pagination"
+git commit --quiet -m "test(sum-to-one): add market discovery comparison harness"
+git commit --quiet -m "chore(deps): bump drizzle-kit to 0.22"
+
+# ❌ Bad
+git commit -m "Fixed the bug"
+git commit -m "Add feature"
+git commit -m "WIP"
+git commit -m "Update code"
+```
+
 ### CRITICAL: Never Bypass Git Hooks
 
 **NEVER use `--no-verify` on commit or push. No exceptions. No rationalizations.**
