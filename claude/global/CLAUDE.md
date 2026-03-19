@@ -77,7 +77,7 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
    Use `/prompting-worktree-agents` for non-trivial tasks to make agents reason before coding.
 
    **Every go-ahead message to a Pi agent MUST include:**
-   > "When done: commit all changes, run `codex review --base main`, fix any issues, commit the fixes, then report done with your commit hash."
+   > "When done: commit all changes using conventional commit format (type(scope): message) with a structured body. Include `Co-Authored-By: Codex <noreply@openai.com>` as the last line of every commit. Run `codex review --base main`, fix any issues, commit the fixes, then report done with your commit hash."
 
 4. **Monitor** — After delegating, **immediately enter an autonomous polling loop**. Do NOT wait for the user to ask for status. Poll every 2-3 minutes until all worktrees are merged:
    ```bash
@@ -109,6 +109,12 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
    COMPOSE_PROJECT_NAME=<repo>-<feature> docker compose down -v
    dev cleanup <repo>/<feature>
    ```
+
+**Small direct changes in main** — For trivial fixes (config tweaks, version bumps, typos) that don't warrant a worktree, the orchestrator may commit directly in main. The same quality bar applies:
+1. Make the change
+2. Run `codex review --base HEAD~1` to verify
+3. Fix any issues flagged
+4. Commit using conventional commit format with `Co-Authored-By: Claude <noreply@anthropic.com>`
 
 ### If you're in a feature worktree → You're the implementer
 - Focus on implementing the feature
@@ -365,6 +371,15 @@ How the change was verified (test commands, test counts, manual checks).
 
 - For small changes (one-liners, config tweaks, version bumps), the subject line alone is fine
 - Always include `## Summary` at minimum for multi-file changes
+
+### Agent Attribution
+
+Every AI-assisted commit must include a `Co-Authored-By` trailer as the last line of the commit body identifying the agent that wrote the code:
+
+- **Claude Code (orchestrator):** `Co-Authored-By: Claude <noreply@anthropic.com>`
+- **Codex / Pi (implementer):** `Co-Authored-By: Codex <noreply@openai.com>`
+
+This is non-optional. If a commit was written by an AI agent and has no co-author line, it is missing attribution. The orchestrator must ensure its go-ahead messages to implementer agents include this requirement, and repos should include commit attribution rules in their `AGENTS.md` so Codex picks them up directly.
 
 ```bash
 # ❌ Bad
