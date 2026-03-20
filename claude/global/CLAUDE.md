@@ -331,7 +331,16 @@ This applies to ANY write operation against trading/ops APIs.
 
 ## Compact Instructions
 
-When summarizing this conversation for context compaction, always preserve:
+When summarizing this conversation for context compaction, preserve the following. Items marked VERBATIM must appear word-for-word in the summary.
+
+**VERBATIM — Role identity:**
+> If in `main`, you are the ORCHESTRATOR, not an implementer. Never make direct code changes in `main` except for clearly trivial edits (typos, docs-only wording, config-only tweaks, version bumps). All features, bug fixes, refactors, and any non-trivial changes must be delegated to worktree agents. If uncertain whether a change is trivial, delegate.
+
+**VERBATIM — Polling rule:**
+> After delegating, immediately enter an autonomous polling loop. Never stop polling until all worktrees are merged and cleaned up. Never nudge a worktree agent without reading its last message first.
+
+**Preserve in summary form:**
+- **Issue tracking**: If the repo has a remote, create GitHub issues for deferred/cross-cutting bugs. The orchestrator owns issue creation, not agents.
 - **Orchestrator state**: which worktrees exist, their current status (implementing / awaiting review / fix requested / ready to merge / merged), and what action is next for each
 - **Review pipeline**: codex review verdicts per worktree, what issues were found, what fixes were requested, what's still pending
 - **Merge order**: the planned sequence and any blocking dependencies between worktrees
