@@ -717,20 +717,17 @@ Cashew itself is a workflow/bootstrap/orchestration repo. It does **not** need t
 
 But Cashew **must** preserve, respect, and strengthen those patterns in the target repos it operates on.
 
-The reference target-repo quality style is represented well by:
+The reference target-repo quality style is represented well by patterns like:
 
-- [AGENTS.md](/Users/markkrasner/skunkworks-experiments-mk/AGENTS.md)
-- [package.json](/Users/markkrasner/skunkworks-experiments-mk/package.json)
-- [turbo.json](/Users/markkrasner/skunkworks-experiments-mk/turbo.json)
-- [.husky/pre-commit](/Users/markkrasner/skunkworks-experiments-mk/.husky/pre-commit)
-- [.husky/pre-push](/Users/markkrasner/skunkworks-experiments-mk/.husky/pre-push)
-- [.github/workflows/ci.yml](/Users/markkrasner/skunkworks-experiments-mk/.github/workflows/ci.yml)
-- [executors/near-certainty-15m/package.json](/Users/markkrasner/skunkworks-experiments-mk/executors/near-certainty-15m/package.json)
-- [packages/db/package.json](/Users/markkrasner/skunkworks-experiments-mk/packages/db/package.json)
-- [executors/near-certainty-15m/vitest.config.ts](/Users/markkrasner/skunkworks-experiments-mk/executors/near-certainty-15m/vitest.config.ts)
-- [packages/db/vitest.config.ts](/Users/markkrasner/skunkworks-experiments-mk/packages/db/vitest.config.ts)
-- [executors/near-certainty-15m/tsconfig.json](/Users/markkrasner/skunkworks-experiments-mk/executors/near-certainty-15m/tsconfig.json)
-- [packages/db/tsconfig.json](/Users/markkrasner/skunkworks-experiments-mk/packages/db/tsconfig.json)
+- `AGENTS.md`
+- repo-root `package.json`
+- repo-root `turbo.json`
+- `.husky/pre-commit`
+- `.husky/pre-push`
+- `.github/workflows/ci.yml`
+- package-level `package.json` files in executor and data packages
+- package-level `vitest.config.ts` files
+- package-level `tsconfig.json` files
 
 ### What These Reference Patterns Actually Encode
 

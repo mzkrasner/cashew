@@ -23,6 +23,7 @@ current Cashew model.
 | Global Claude config | `~/.claude/CLAUDE.md` | Cashew context block replaced in-place between markers |
 | /dev command | `~/.claude/commands/dev.md` → `claude/commands/dev.md` | Session manager docs |
 | /codex-review command | `~/.claude/commands/codex-review.md` → `claude/commands/codex-review.md` | Stateless final Codex review |
+| /cashew-feedback command | `~/.claude/commands/cashew-feedback.md` → `claude/commands/cashew-feedback.md` | Local-only Cashew workflow feedback capture |
 | /prompting-worktree-agents | `~/.claude/skills/prompting-worktree-agents/` → `claude/skills/prompting-worktree-agents/` | Socratic prompting for worktree agents |
 | /repo-quality-rails-setup | `~/.claude/skills/repo-quality-rails-setup/` → `claude/skills/repo-quality-rails-setup/` | Optional quality rails setup |
 | Pi extensions | `~/.pi/agent/extensions/` → `pi/extensions/` | message-queue, pi-subscribe, kw-role |
@@ -134,6 +135,7 @@ PY
 # Global commands
 ln -sf "$CASHEW_ROOT/claude/commands/dev.md" ~/.claude/commands/dev.md
 ln -sf "$CASHEW_ROOT/claude/commands/codex-review.md" ~/.claude/commands/codex-review.md
+ln -sf "$CASHEW_ROOT/claude/commands/cashew-feedback.md" ~/.claude/commands/cashew-feedback.md
 
 # Global skills
 ln -sf "$CASHEW_ROOT/claude/skills/prompting-worktree-agents" ~/.claude/skills/prompting-worktree-agents
@@ -208,6 +210,7 @@ codex --version || echo "Codex CLI not installed — /codex-review will be unava
 ls -l ~/.pi/agent/extensions/
 ls -l ~/.claude/commands/dev.md
 ls -l ~/.claude/commands/codex-review.md
+ls -l ~/.claude/commands/cashew-feedback.md
 ls -l ~/.claude/skills/prompting-worktree-agents
 ```
 

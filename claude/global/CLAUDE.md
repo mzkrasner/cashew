@@ -29,6 +29,12 @@ dev pi-status <session>       # Check agent status/last messages
 dev queue-status <session> -m # Check pending queue
 ```
 
+If you notice Cashew workflow friction, capture it locally with:
+```text
+/cashew-feedback
+```
+This writes a structured local feedback artifact into the Cashew repo for later triage.
+
 **Rule:** Never nudge a worktree agent without reading its last message first:
 ```bash
 dev pi-status <session> --messages 1

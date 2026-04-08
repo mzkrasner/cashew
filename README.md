@@ -6,6 +6,7 @@ A dev-environment bootstrap and orchestration layer built around:
 - persistent **Codex-backed Pi roles** for planning, review, and implementation
 - a `dev` session/worktree/task manager
 - Claude skills/commands for setup and orchestration
+- a local-only `/cashew-feedback` command for capturing Cashew workflow friction
 
 ## Example prompts (human → Claude)
 
@@ -226,6 +227,21 @@ Important:
 - Reviewer findings are advisory; the implementer must independently verify them and record that verification in the slice's `implementer-response.md`.
 - Recording a slice commit is not just bookkeeping; Cashew verifies the commit exists in git and stays within the declared slice scope.
 - project-level commands surface active-task queues, session mappings, and cross-task warnings for shared worktrees, overlapping scopes, and overlapping changed files.
+
+## Capturing Cashew Feedback
+
+When you notice Cashew friction or something feels wrong, capture it locally with:
+
+```text
+/cashew-feedback
+```
+
+This command:
+- writes a structured local feedback artifact into the local Cashew repo
+- captures expected vs actual behavior, repro steps, and context
+- does not create a GitHub issue
+
+Use it from the orchestrator when you want a problem preserved for later Cashew improvement work without interrupting the current project flow.
 
 ## Cashew TUI (optional)
 
