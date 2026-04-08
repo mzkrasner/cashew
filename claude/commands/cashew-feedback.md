@@ -98,7 +98,7 @@ Use:
 - short slug from the title/summary
 
 Example:
-- `.cashew/feedback/2026-04-08T19-30-00Z-task-slice-review-loop.md`
+- `.cashew/feedback/2026-04-08T19-30-00Z-task-slice-feedback.md`
 
 ## Final response
 

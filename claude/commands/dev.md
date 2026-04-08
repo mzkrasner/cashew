@@ -7,8 +7,8 @@ Use the `dev` command to manage tmux-backed project sessions in `~/projects/`.
 **Auto-start:** New sessions start their auto-command (`pi` for worktrees, `claude` for regular repos) automatically.
 **Detached by default:** Creating a new session always creates it detached and prints how to attach. Running `dev` against an existing session attaches to it. This means agents can safely create sessions without needing a terminal.
 **Pi runs in sub-sessions:** Pi always runs in `/pi` sub-sessions (e.g., `dev repo/worktree/pi`), not the base session. This is consistent across `dev wt` and manual session creation.
-**Important:** For worktree agents, use `/pi` sub-sessions (not `/claude`) so message tools target the correct agent session.
-**Rule:** Never nudge a worktree agent without reading its last message first:
+**Important:** For implementation worktrees, use `/pi` sub-sessions (not `/claude`) so message tools target the correct agent session.
+**Rule:** Never nudge a task-role or worktree agent without reading its last message first:
 ```bash
 dev pi-status <session> --messages 1
 # optionally check pending queue
@@ -17,7 +17,7 @@ dev queue-status <session> -m
 dev pi-subscribe <session>
 ```
 
-**Orchestrator messaging rule:** Always use `dev send-pi <session> "message"` (auto-subscribes and waits). If you don't want to block, run it in the background (e.g., append `&`) instead of using `--no-await`. Only use `--no-await` for true fire-and-forget. Only use `dev send` for raw tmux key input when you explicitly need keystrokes (e.g., Enter/Ctrl-C).
+**Orchestrator messaging rule:** Use `dev task send ...` for persistent task roles and `dev send-pi ...` for direct worktree sessions. Only use `dev send` for raw tmux key input when you explicitly need keystrokes (e.g., Enter/Ctrl-C).
 
 **Anti-pattern (do NOT do this):**
 ```bash
@@ -426,43 +426,41 @@ Each implementer response must include:
 
 ## Worktree Workflow
 
-Worktree branches are local by default. You do **not** need to push them to a remote just to coordinate. Merge by switching to `main` and merging locally.
+Worktree branches are local by default. You do **not** need to push them to a remote just to coordinate. Merge by switching to `main` and merging locally after the task reaches `ready_to_merge`.
 
-**Main session = orchestrator**, feature sessions = focused implementation.
+**Main session = orchestrator**, feature worktrees = isolated implementation environments.
 
-### Starting a feature
-1. In main Claude session, create worktree (pi starts detached in `/pi` sub-session):
+### Starting implementation for a task
+1. In the main Claude session, create or choose the feature worktree:
    ```bash
    dev wt <repo> <feature-branch>
-   # Output: pi started in session: dev <repo>/<feature-branch>/pi (detached)
    ```
-2. User attaches to feature session: `dev <repo>/<feature-branch>/pi`
-3. Feature Claude: implement and commit locally
-
-### Completing a feature
-1. Feature Claude: final commits, notify user it's ready
-2. User switches back: `dev <repo>/main/pi`
-3. Main Claude merges locally, then full cleanup:
+2. Use the task workflow to bind implementation to the approved plan:
    ```bash
-   # Merge the feature (local branch)
-   git merge <feature-branch>
-
-   # Full cleanup (in this order):
-   # 1. Tear down Docker environment (from worktree directory)
-   cd ~/projects/<repo>/<feature-branch>
-   COMPOSE_PROJECT_NAME=<repo>-<feature-branch> docker compose down -v
-
-   # 2. Remove worktree + branch + session
-   # Run without --force first. If warned about commits not in main,
-   # decide whether the branch was merged or should be discarded, then re-run with --force if needed.
-   dev cleanup <repo>/<feature-branch>
+   dev task start-impl <repo> <slug> <feature-branch>
+   dev task send <repo> <slug> implementer-codex "implement the approved current slice"
+   ```
+3. Review and commit one slice at a time through:
+   ```bash
+   dev task slice start <repo> <slug> <slice-id>
+   dev task slice validate <repo> <slug> <slice-id>
+   dev task slice approve-commit <repo> <slug> <slice-id>
+   dev task slice committed <repo> <slug> <slice-id> <commit>
    ```
 
-### Why this pattern?
-- **Feature Claude** stays focused on implementation
-- **Main Claude** handles integration and project management
-- Avoids Claude deleting its own worktree mid-session
-- Clean separation of concerns
+### Completing a task-backed feature
+1. Finish all slices and task-level validation:
+   ```bash
+   dev task verify <repo> <slug>
+   dev task validate <repo> <slug> implementation
+   dev task ready-merge <repo> <slug>
+   ```
+2. Merge locally from `main`, then record closure:
+   ```bash
+   git merge <feature-branch>
+   dev task merged <repo> <slug> [merge-ref]
+   dev task close <repo> <slug> [--cleanup]
+   ```
 
 ## Knowledge Workers (long-running domain agents)
 
@@ -492,7 +490,7 @@ dev pi-subscribe <repo>/main/kw-<name> --last-or-next      # Show last if presen
 
 **WARNING:** `pi-subscribe` blocks until the NEXT completion. If the agent is idle and no message is queued, it can hang indefinitely. Check `dev pi-status <session> --messages 1` and `dev queue-status <session> -m` first. If idle, use `--last` (or `--last-or-next`) instead.
 
-**How to use them:** Ask KWs focused questions — "where are the architecture risks in this plan?", "review this change for data-timeliness issues." They respond with constraints, edge cases, and guidance. Use their output to shape plans before handing work to worktree agents.
+**How to use them:** Ask KWs focused questions — "where are the architecture risks in this plan?", "review this change for data-timeliness issues." They respond with constraints, edge cases, and guidance. Use their output to shape plans and slices before handing work to implementer sessions.
 
 **Role boundaries:** KWs advise — they don't create worktrees, merge branches, or run destructive commands. If asked to implement, they respond with a plan instead.
 
@@ -509,38 +507,36 @@ dev pi-subscribe <repo>/main/kw-<name> --last-or-next      # Show last if presen
 - You are abandoning the work entirely, or
 - The session is broken beyond recovery.
 
-## Reviewing a worktree agent (do this before merging)
+## Reviewing implementation before merging
 
-Use the **review loop** from the PM session:
-```bash
-dev review-loop
-```
+Use the task and slice workflow rather than an ad hoc review loop:
 
-Important: execute the loop manually. The last step must be:
-```bash
-bash sleep 300
-```
-Run it in the foreground, then return to step 1 and repeat. Do **not** write scripts, nohup, or background loops.
-
-Quick version:
-1. Read the agent's latest message so you don't merge mid-stream:
+1. Read the relevant role/session status before nudging:
    ```bash
-   dev pi-status <session> --messages 1
-   dev queue-status <session> -m
-   dev pi-subscribe <session>
+   dev task review <repo> <slug>
+   dev task poll <repo> <slug>
    ```
-2. Check for session requirements/notes if they were set:
+2. Validate the current slice and require implementer verification of reviewer findings:
    ```bash
-   dev requirements <session>
+   dev task slice validate <repo> <slug> <slice-id>
    ```
-3. If the agent asked for feedback or is mid-task, reply before merging. Only review commits once the agent says it's complete.
+3. Only authorize commit for that slice when validation passes:
+   ```bash
+   dev task slice approve-commit <repo> <slug> <slice-id>
+   ```
+4. Before merge, require task-level verification and implementation validation:
+   ```bash
+   dev task verify <repo> <slug>
+   dev task validate <repo> <slug> implementation
+   dev task ready-merge <repo> <slug>
+   ```
 
 ## Tips
 
 1. Always use sub-sessions for long-running processes (Claude, servers)
-2. Use `dev send-pi <session> <message>` when messaging worktree agents; it queues safely. Use `dev send` only for raw keystrokes.
+2. Use `dev task send ...` for persistent task roles and `dev send-pi <session> <message>` for direct worktree sessions. Use `dev send` only for raw keystrokes.
 3. `dev cleanup` now blocks if the branch has commits not in main; re-run with `--force` only after deciding it's safe to discard.
 4. The session persists even if you close SSH or terminal (until reboot)
 5. Use `dev` with no args to see all projects and active sessions
 6. Worktree repos let you work on multiple branches simultaneously
-7. Main Claude is your "project manager" - use it to orchestrate features
+7. Main Claude is the project orchestrator. Use it to manage tasks, slices, and merges.

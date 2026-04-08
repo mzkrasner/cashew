@@ -108,9 +108,9 @@ dev wt myapp feature-auth
 
 Examples (human reattach):
 ```bash
-dev myapp/feature-auth            # Reattach to Pi in that worktree
+dev myapp/feature-auth            # Reattach to the default worktree session
 dev myapp/feature-auth/pi          # Explicit Pi sub-session (preferred)
-dev myapp/feature-auth/claude      # Claude helper (avoid for worktree agents)
+dev myapp/main/claude              # Project orchestrator session
 dev myapp/feature-auth/tests       # Reattach to long-running tests
 ```
 
@@ -120,12 +120,13 @@ dev myapp/feature-auth/tests       # Reattach to long-running tests
 - Sessions persist across SSH disconnects.
 
 **Workflow**
-- SSH in, list sessions, reattach to any agent context.
+- SSH in, list sessions, reattach to the project orchestrator or any worktree/task context.
 
 ```bash
 ssh myserver
 dev                              # List running contexts
-dev myapp/feature-auth            # Resume Pi agent
+dev myapp/main/claude             # Resume orchestrator
+dev myapp/feature-auth/pi         # Resume worktree agent
 ```
 
 ### Worktree → agent mapping (default, not enforced)

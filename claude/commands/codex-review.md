@@ -99,7 +99,7 @@ Based on the findings, give a clear verdict:
 
 If the verdict is FIX FIRST and you're the orchestrator, send feedback to the relevant implementer session or reopen the task review flow as needed:
 ```bash
-dev send-pi <repo>/<worktree>/pi "Codex review found issues: <summary>. Fix these before marking done."
+dev task send <repo> <slug> implementer-codex "Codex final review found issues: <summary>. Rework the current slice or reopen implementation review as needed."
 ```
 
 ## Review Focus Areas
