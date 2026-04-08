@@ -221,6 +221,7 @@ Important:
 - each project has its own dedicated orchestrator agent
 - Task-role sessions are persistent support lanes used by the orchestrator.
 - Validation reads authoritative approval state from structured `.state.json` files. Review markdown remains explanatory.
+- Structured state files are validated against versioned JSON Schema before Cashew applies workflow-specific semantic checks.
 - `verification-contract.md` should contain fenced runnable `bash`/`sh` checks for the target repo.
 - The plan is not lockable until at least one commit slice exists.
 - Each slice must pass its own review loop before commit authorization.

@@ -355,6 +355,7 @@ These commands surface:
 ## Structured Review State
 
 Review markdown is narrative only. Authoritative machine state now lives in JSON files.
+Cashew validates these files against versioned JSON Schema first, then applies workflow-specific semantic checks.
 
 Task-level reviews:
 - `.cashew/tasks/<slug>/plan-review-codex.state.json`
@@ -368,6 +369,7 @@ Slice-level reviews:
 Required task-level state shape:
 ```json
 {
+  "schemaVersion": 1,
   "decision": "pending",
   "blockingFindings": [],
   "nonBlockingFindings": [],
@@ -379,6 +381,7 @@ Required task-level state shape:
 Required slice round state shape:
 ```json
 {
+  "schemaVersion": 1,
   "round": 1,
   "reviewerStates": {
     "codex": {

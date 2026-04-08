@@ -39,6 +39,10 @@ SEP="_"  # Session name separator (internal session names don't allow /)
 TASK_ROOT_REL=".cashew/tasks"
 TASK_SESSION_DIR_NAME="sessions"
 TASK_SLICE_DIR_NAME="slices"
+CASHEW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCHEMA_TASK_REVIEW_STATE="$CASHEW_ROOT/schemas/task-review-state.schema.json"
+SCHEMA_SLICE_ROUND_STATE="$CASHEW_ROOT/schemas/slice-round-state.schema.json"
+JSON_SCHEMA_VALIDATOR="$CASHEW_ROOT/bin/validate-json-schema.py"
 
 # Colors
 BOLD='\033[1m'
@@ -105,6 +109,12 @@ repo_ensure_local_working_state_excludes() {
     local repo="$1"
     repo_ensure_local_exclude "$repo" ".cashew/" >/dev/null 2>&1 || true
     repo_ensure_local_exclude "$repo" ".agent/" >/dev/null 2>&1 || true
+}
+
+cashew_validate_json_schema() {
+    local schema_file="$1"
+    local data_file="$2"
+    python3 "$JSON_SCHEMA_VALIDATOR" "$schema_file" "$data_file"
 }
 
 task_dir() {
@@ -787,6 +797,12 @@ task_validate_phase() {
         if [ ! -f "$plan_claude_state" ]; then
             failures+=("missing:$(basename "$plan_claude_state")")
         fi
+        if [ -f "$plan_codex_state" ] && ! cashew_validate_json_schema "$SCHEMA_TASK_REVIEW_STATE" "$plan_codex_state" >/dev/null 2>&1; then
+            failures+=("schema_invalid:$(basename "$plan_codex_state")")
+        fi
+        if [ -f "$plan_claude_state" ] && ! cashew_validate_json_schema "$SCHEMA_TASK_REVIEW_STATE" "$plan_claude_state" >/dev/null 2>&1; then
+            failures+=("schema_invalid:$(basename "$plan_claude_state")")
+        fi
         if [ -f "$plan_codex_state" ] && [ "$(task_structured_review_findings_invalid_count "$plan_codex_state")" -gt 0 ]; then
             failures+=("invalid_review_state:$(basename "$plan_codex_state")")
         fi
@@ -842,6 +858,12 @@ task_validate_phase() {
         fi
         if [ ! -f "$impl_claude_state" ]; then
             failures+=("missing:$(basename "$impl_claude_state")")
+        fi
+        if [ -f "$impl_codex_state" ] && ! cashew_validate_json_schema "$SCHEMA_TASK_REVIEW_STATE" "$impl_codex_state" >/dev/null 2>&1; then
+            failures+=("schema_invalid:$(basename "$impl_codex_state")")
+        fi
+        if [ -f "$impl_claude_state" ] && ! cashew_validate_json_schema "$SCHEMA_TASK_REVIEW_STATE" "$impl_claude_state" >/dev/null 2>&1; then
+            failures+=("schema_invalid:$(basename "$impl_claude_state")")
         fi
         if [ -f "$impl_codex_state" ] && [ "$(task_structured_review_findings_invalid_count "$impl_codex_state")" -gt 0 ]; then
             failures+=("invalid_review_state:$(basename "$impl_codex_state")")
@@ -1135,6 +1157,7 @@ EOF
 
     cat > "$round_dir/state.json" <<'EOF'
 {
+  "schemaVersion": 1,
   "round": 1,
   "reviewerStates": {
     "codex": {
@@ -1217,6 +1240,7 @@ EOF
 
     cat > "$round_dir/state.json" <<EOF
 {
+  "schemaVersion": 1,
   "round": $round,
   "reviewerStates": {
     "codex": {
@@ -1421,6 +1445,9 @@ task_slice_validate() {
     claude_decision=$(jq -r '.reviewerStates.claude.decision // "missing"' "$round_state" 2>/dev/null | tr '[:upper:]' '[:lower:]')
 
     if [ -f "$round_state" ]; then
+        if ! cashew_validate_json_schema "$SCHEMA_SLICE_ROUND_STATE" "$round_state" >/dev/null 2>&1; then
+            failures+=("schema_invalid:$(task_slice_round_name "$round")/state.json")
+        fi
         if [ "$(task_round_invalid_finding_count "$round_state")" -gt 0 ]; then
             failures+=("invalid_round_findings:$(task_slice_round_name "$round")/state.json")
         fi
@@ -2887,6 +2914,7 @@ EOF
 
     cat > "$dir/plan-review-codex.state.json" <<'EOF'
 {
+  "schemaVersion": 1,
   "reviewerRole": "plan-review-codex",
   "decision": "pending",
   "blockingFindings": [],
@@ -2908,6 +2936,7 @@ EOF
 
     cat > "$dir/plan-review-claude.state.json" <<'EOF'
 {
+  "schemaVersion": 1,
   "reviewerRole": "plan-critic-claude",
   "decision": "pending",
   "blockingFindings": [],
@@ -2941,6 +2970,7 @@ EOF
 
     cat > "$dir/implementation-review-codex.state.json" <<'EOF'
 {
+  "schemaVersion": 1,
   "reviewerRole": "implementation-review-codex",
   "decision": "pending",
   "blockingFindings": [],
@@ -2962,6 +2992,7 @@ EOF
 
     cat > "$dir/implementation-review-claude.state.json" <<'EOF'
 {
+  "schemaVersion": 1,
   "reviewerRole": "implementation-critic-claude",
   "decision": "pending",
   "blockingFindings": [],

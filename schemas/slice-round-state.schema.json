@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cashew.local/schemas/slice-round-state.schema.json",
+  "title": "Cashew Slice Round State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "round",
+    "reviewerStates",
+    "implementerResponses",
+    "verification"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reviewerStates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codex", "claude"],
+      "properties": {
+        "codex": { "$ref": "#/$defs/reviewerState" },
+        "claude": { "$ref": "#/$defs/reviewerState" }
+      }
+    },
+    "implementerResponses": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/implementerResponse" }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lastRun"],
+      "properties": {
+        "lastRun": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["at", "commands", "failures", "success"],
+          "properties": {
+            "at": { "type": ["string", "null"] },
+            "commands": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "failures": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "success": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "claim", "evidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "claim": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "reviewerState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "blockingFindings",
+        "nonBlockingFindings",
+        "summary",
+        "updatedAt"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["pending", "approved", "blocked"]
+        },
+        "blockingFindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "nonBlockingFindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "summary": { "type": "string" },
+        "updatedAt": { "type": ["string", "null"] }
+      }
+    },
+    "implementerResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "findingId",
+        "status",
+        "verificationMethod",
+        "evidence",
+        "resolutionSummary"
+      ],
+      "properties": {
+        "findingId": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "rejected", "partially_applied"]
+        },
+        "verificationMethod": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "resolutionSummary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
