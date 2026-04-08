@@ -101,6 +101,12 @@ repo_ensure_local_exclude() {
     return 0
 }
 
+repo_ensure_local_working_state_excludes() {
+    local repo="$1"
+    repo_ensure_local_exclude "$repo" ".cashew/" >/dev/null 2>&1 || true
+    repo_ensure_local_exclude "$repo" ".agent/" >/dev/null 2>&1 || true
+}
+
 task_dir() {
     local repo="$1"
     local slug="$2"
@@ -2787,7 +2793,7 @@ task_new() {
     fi
 
     mkdir -p "$dir/$TASK_SESSION_DIR_NAME" "$dir/$TASK_SLICE_DIR_NAME"
-    repo_ensure_local_exclude "$repo" ".cashew/" >/dev/null 2>&1 || true
+    repo_ensure_local_working_state_excludes "$repo"
 
     cat > "$dir/task.json" <<EOF
 {
@@ -2974,6 +2980,7 @@ EOF
     echo -e "${GREEN}Task created:${RESET} $repo/$slug"
     echo "Local git exclude:"
     echo "  .cashew/ added to .git/info/exclude for $repo"
+    echo "  .agent/ added to .git/info/exclude for $repo"
     echo "Files:"
     echo "  $dir/proposal.md"
     echo "  $dir/plan.md"
@@ -3695,6 +3702,7 @@ new_project() {
     default_branch=$(git --git-dir=.bare symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
     git --git-dir=.bare worktree add main "$default_branch"
+    repo_ensure_local_working_state_excludes "$name"
 
     echo ""
     echo -e "${GREEN}Project created!${RESET}"
@@ -3740,6 +3748,7 @@ init_project() {
     cd .bare
     git remote remove origin 2>/dev/null
     git worktree add ../main main --quiet
+    repo_ensure_local_working_state_excludes "$name"
 
     echo ""
     echo -e "${GREEN}Project created!${RESET}"

@@ -30,7 +30,7 @@ A dev-environment bootstrap and orchestration layer built around:
 - Worktrees are stored at `~/Projects/<repo>/<worktree>`; bare repos live at `~/Projects/<repo>/.bare`.
 - If you choose a different projects folder during setup, export it as `CASHEW_PROJECTS_DIR` so `dev` and agent instructions agree on the same path.
 - Serious-task workflow uses `.cashew/tasks/<slug>/...` artifacts plus persistent task-role sessions.
-- Cashew treats `.cashew/` as local orchestration state and adds `.cashew/` to the repo's local `.git/info/exclude` automatically when you create a task.
+- Cashew treats `.cashew/` and `.agent/` as local working state and adds both to the repo's local `.git/info/exclude` automatically when you create or initialize a project/task.
 
 **Assumed (current defaults)**
 - Claude is the **primary orchestrator** at the projects root and repo roots.

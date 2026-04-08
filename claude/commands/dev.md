@@ -186,7 +186,7 @@ For a single project, assume one dedicated orchestrator agent may be managing mu
 
 Persistent sessions help, but these files are the durable task record and the source of truth.
 
-Cashew stores these artifacts under the target repo's `.cashew/` directory and automatically adds `.cashew/` to the repo's local `.git/info/exclude` when you create a task, so the orchestration state stays local and is not accidentally committed.
+Cashew stores these artifacts under the target repo's `.cashew/` directory and automatically adds both `.cashew/` and `.agent/` to the repo's local `.git/info/exclude`, so orchestration and local analysis state stay local and are not accidentally committed.
 
 ### Commit slices are mandatory
 
