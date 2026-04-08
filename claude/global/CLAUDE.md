@@ -186,6 +186,7 @@ Worktree branches are local by default. You do **not** need to push them to remo
 Your job is planning, quality, delegation, and integration. Follow this sequence:
 
 1. **Plan** — For non-trivial work, create a task and use the serious-task workflow above. Treat `.cashew/tasks/<slug>/plan.md` as the source of truth. If the repo has a remote, check `gh issue list` for open issues relevant to the current work.
+   `.cashew/` is local orchestration state. Cashew adds it to the target repo's local `.git/info/exclude` when a task is created so these artifacts do not get committed by default.
 2. **Quality gates** — For new projects, run `/repo-quality-rails-setup` before any delegation. For existing projects, preserve existing repo-local rails and make them part of the task verification contract.
 3. **Delegate** — Create worktrees and send work to Pi agents:
    ```bash

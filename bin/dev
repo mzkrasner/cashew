@@ -74,6 +74,33 @@ repo_base_dir() {
     fi
 }
 
+repo_git_info_exclude() {
+    local repo="$1"
+    local base_dir
+    base_dir=$(repo_base_dir "$repo")
+    if [ ! -d "$base_dir" ]; then
+        echo ""
+        return
+    fi
+    git -C "$base_dir" rev-parse --git-path info/exclude 2>/dev/null || echo ""
+}
+
+repo_ensure_local_exclude() {
+    local repo="$1"
+    local pattern="$2"
+    local exclude_file
+    exclude_file=$(repo_git_info_exclude "$repo")
+    if [ -z "$exclude_file" ]; then
+        return 1
+    fi
+    mkdir -p "$(dirname "$exclude_file")"
+    touch "$exclude_file"
+    if ! grep -Fxq "$pattern" "$exclude_file" 2>/dev/null; then
+        printf '\n%s\n' "$pattern" >> "$exclude_file"
+    fi
+    return 0
+}
+
 task_dir() {
     local repo="$1"
     local slug="$2"
@@ -2760,6 +2787,7 @@ task_new() {
     fi
 
     mkdir -p "$dir/$TASK_SESSION_DIR_NAME" "$dir/$TASK_SLICE_DIR_NAME"
+    repo_ensure_local_exclude "$repo" ".cashew/" >/dev/null 2>&1 || true
 
     cat > "$dir/task.json" <<EOF
 {
@@ -2944,6 +2972,8 @@ Document the target repo's required lint, typecheck, unit, integration, DB integ
 EOF
 
     echo -e "${GREEN}Task created:${RESET} $repo/$slug"
+    echo "Local git exclude:"
+    echo "  .cashew/ added to .git/info/exclude for $repo"
     echo "Files:"
     echo "  $dir/proposal.md"
     echo "  $dir/plan.md"
