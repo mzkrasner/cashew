@@ -22,6 +22,24 @@ errors are for things the system must enforce.
 
 ## How This Skill Works
 
+Cashew uses this skill at the **target-repo** level. The resulting rails are
+repo-local and remain authoritative for that repo's implementation workflow.
+They are separate from Cashew's own local orchestration state:
+
+- `.cashew/` contains local task/slice orchestration artifacts
+- `.agent/` contains local human + orchestrator working analysis
+
+Cashew adds both to the target repo's local `.git/info/exclude` so they stay
+local by default. This skill should configure quality gates for the real source
+tree and its real tests, not for Cashew's local orchestration artifacts.
+
+For serious Cashew tasks, the orchestrator should incorporate the repo's actual
+quality rails into `.cashew/tasks/<slug>/verification-contract.md`. The rule is:
+
+- the task plan and slice reviews govern *what* is being changed
+- this skill's rails govern *whether the code is mechanically acceptable*
+- merge readiness requires both
+
 There are two modes based on what the repo needs:
 
 1. **TypeScript monorepo** (prescriptive): Exact tools, exact configs, exact rules. Read

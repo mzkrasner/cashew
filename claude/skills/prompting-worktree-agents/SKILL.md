@@ -10,6 +10,21 @@ description: >
 
 # Prompting Worktree Agents (Socratic Loop)
 
+This skill helps the orchestrator get better implementation quality from a
+worktree agent. It does **not** replace Cashew's task/slice workflow. For
+serious work, use this skill inside an approved `dev task ...` flow:
+
+- planner defines the task and commit slices up front
+- reviewers and implementer work against the current slice
+- implementer does **not** commit until the orchestrator has run:
+  - `dev task slice validate <repo> <slug> <slice-id>`
+  - `dev task slice approve-commit <repo> <slug> <slice-id>`
+- after the real git commit exists, record it with:
+  - `dev task slice committed <repo> <slug> <slice-id> <commit>`
+
+If the task is large or risky, the orchestrator should prefer persistent
+task-role sessions over ad hoc one-off prompts.
+
 Before a worktree agent touches code, walk it through a structured reasoning
 loop so it understands the problem, the constraints, and has a concrete plan
 with clear acceptance criteria. This catches bad assumptions early and produces
@@ -81,21 +96,23 @@ edge cases must be handled. Also state the non-goals — what are we intentional
 NOT changing?"
 ```
 
-### 5. Go-ahead (tied to the approved plan)
+### 5. Go-ahead (tied to the approved plan and current slice)
 
 Summarize what the agent said back to it. Correct anything that's off. Approve
 the specific plan and boundaries — not a vague "go ahead."
 
 ```bash
-dev send-pi <repo>/<worktree>/pi "Good. Here's what I'm approving: [summary of
-plan from step 3]. Acceptance criteria: [from step 4]. Non-goals: [from step 4].
-[Any corrections or additions].
+dev send-pi <repo>/<worktree>/pi "Good. Here's what I'm approving for the
+current slice: [summary of plan from step 3]. Acceptance criteria: [from step 4].
+Non-goals: [from step 4]. [Any corrections or additions].
 
-Implement this plan — no broader changes. When done: commit all changes using
-conventional commit format (type(scope): message) with a structured body.
-Include 'Co-Authored-By: Codex <noreply@openai.com>' as the last line of every
-commit. Run 'codex review --base main', fix any issues, commit the fixes, then
-report done with your commit hash."
+Implement only this slice boundary and stop with uncommitted changes when ready
+for review. Do not commit yet. Review findings are advisory: independently
+verify each claim before applying it, and record your verified responses in the
+task's implementer-response artifact. If reviewer feedback is wrong, incomplete,
+or out of scope, say so explicitly with evidence. After the orchestrator
+authorizes commit for this slice, create the real git commit and report the
+commit hash."
 ```
 
 ## Between Each Prompt
@@ -146,6 +163,19 @@ Instruct the agent that it must **stop and ask back** (not guess) when it hits:
 - Missing context it needs to proceed
 
 Include this in the go-ahead message when appropriate.
+
+## Slice-Aware Overlay
+
+When the work is running under Cashew's serious-task workflow, add these
+requirements to the implementer prompt:
+
+- name the current task slug and slice id explicitly
+- restate the approved slice boundary before coding
+- confirm which files are expected to change for this slice
+- stop when the slice is review-ready; do not silently expand scope
+- treat reviewer findings as hypotheses to verify, not instructions to obey
+- if review feedback requires a broader change than the approved slice, stop and
+  ask the orchestrator to reopen planning or redefine the slice
 
 ## Conditional Overlays
 
