@@ -35,7 +35,7 @@ If you notice Cashew workflow friction, capture it locally with:
 ```
 This writes a structured local feedback artifact into the Cashew repo for later triage.
 
-**Rule:** Never nudge a worktree agent without reading its last message first:
+**Rule:** Never nudge a task-role or worktree agent without reading its last message first:
 ```bash
 dev pi-status <session> --messages 1
 # optional queue check
@@ -43,18 +43,6 @@ dev queue-status <session> -m
 ```
 
 **Messaging rule:** When you expect a response, use `dev send-pi <session> --await "message"` to send and wait in one step. Use plain `dev send-pi` only for fire-and-forget.
-
-**Before merging or reviewing worktree output:**
-```bash
-dev review-loop
-```
-Run the loop manually. Always execute:
-```bash
-bash sleep 300
-```
-Run it in the foreground, then return to step 1 and repeat. Do **not** write scripts, nohup, or background loops.
-
-Only review commits once the agent confirms it's done or asks for review.
 
 ## Serious Task Workflow
 
@@ -188,51 +176,35 @@ Your job is planning, quality, delegation, and integration. Follow this sequence
 1. **Plan** — For non-trivial work, create a task and use the serious-task workflow above. Treat `.cashew/tasks/<slug>/plan.md` as the source of truth. If the repo has a remote, check `gh issue list` for open issues relevant to the current work.
    `.cashew/` and `.agent/` are local working state. Cashew adds both to the target repo's local `.git/info/exclude` so these artifacts do not get committed by default.
 2. **Quality gates** — For new projects, run `/repo-quality-rails-setup` before any delegation. For existing projects, preserve existing repo-local rails and make them part of the task verification contract.
-3. **Delegate** — Create worktrees and send work to Pi agents:
+3. **Delegate** — Create worktrees as needed, then drive the task through persistent task-role sessions and slice checkpoints. Use `/prompting-worktree-agents` when you want a worktree implementer to reason carefully before producing the current slice's uncommitted work.
+4. **Monitor** — Use the task/project surfaces, not an ad hoc polling script:
    ```bash
-   dev wt <repo> <feature>
-   dev send-pi <repo>/<feature>/pi "instructions"
+   dev task review <repo> <slug>
+   dev task poll <repo> <slug>
+   dev project review <repo>
+   dev project poll <repo>
    ```
-   Use `/prompting-worktree-agents` for non-trivial tasks to make agents reason before coding.
-
-   **Every go-ahead message to a Pi agent MUST include:**
-   > "When done: commit all changes using conventional commit format (type(scope): message) with a structured body. Include `Co-Authored-By: Codex <noreply@openai.com>` as the last line of every commit. If this work addresses a GitHub issue, reference it in the commit (e.g., `refs #42`). Run `codex review --base main`, fix any issues, commit the fixes, then report done with your commit hash."
-
-4. **Monitor** — After delegating, **immediately enter an autonomous polling loop**. Do NOT wait for the user to ask for status. Poll every 2-3 minutes until all worktrees are merged:
+   Nudge only after reading the last message/status from the relevant role session.
+5. **Review & merge** — Do not approve a commit until the current slice is validated and explicitly approved:
    ```bash
-   # Check each active worktree agent
-   dev pi-status <repo>/<feature>/pi --messages 1
+   dev task slice validate <repo> <slug> <slice-id>
+   dev task slice approve-commit <repo> <slug> <slice-id>
+   dev task slice committed <repo> <slug> <slice-id> <commit>
+   dev task verify <repo> <slug>
+   dev task validate <repo> <slug> implementation
+   dev task ready-merge <repo> <slug>
    ```
-   On each poll:
-   - If agent reports done → verify commit exists (`git log` in worktree), then proceed to step 5
-   - If agent reports done but didn't commit → tell it to commit
-   - If agent is stuck or idle for 10+ minutes → nudge with a status check
-   - If agent asks a question → answer it
-   Between polls, use `sleep 120` or `sleep 180`. **Never stop polling until all worktrees are merged and cleaned up.**
-
-5. **Review & merge** — Only after agent confirms completion, has committed, and codex review passed:
-   ```bash
-   # CRITICAL: verify the branch has NEW commits beyond main
-   git log --oneline main..<feature>
-   # If this output is EMPTY → the agent did NOT commit. Do NOT merge.
-   # Tell the agent: "Your branch has no commits. Commit your changes."
-
-   # Only if commits exist:
-   git merge --quiet <feature>
-
-   # After merge, verify HEAD actually moved:
-   git log --oneline -1  # should show the feature's commit, not the old HEAD
-   ```
+   Only merge after the task reaches `ready_to_merge`.
 6. **Cleanup** — After merge:
    ```bash
-   COMPOSE_PROJECT_NAME=<repo>-<feature> docker compose down -v
-   dev cleanup <repo>/<feature>
+   dev task merged <repo> <slug> [merge-ref]
+   dev task close <repo> <slug> [--cleanup]
    ```
 7. **End-of-session triage** (only if repo has a remote) — Spend 2-5 minutes on `gh issue list`. Close anything resolved by merged work. Label remaining issues. This is not a formal process — just a quick scan to keep the backlog honest.
 
 **Small direct changes in main** — For trivial fixes (config tweaks, version bumps, typos) that don't warrant a worktree, the orchestrator may commit directly in main. The same quality bar applies:
 1. Make the change
-2. Run `codex review --base HEAD~1` to verify
+2. Verify the change against the repo's normal quality rails
 3. Fix any issues flagged
 4. Commit using conventional commit format with `Co-Authored-By: Claude <noreply@anthropic.com>`
 
@@ -456,12 +428,12 @@ When summarizing this conversation for context compaction, preserve the followin
 > If in `main`, you are the ORCHESTRATOR, not an implementer. Never make direct code changes in `main` except for clearly trivial edits (typos, docs-only wording, config-only tweaks, version bumps). All features, bug fixes, refactors, and any non-trivial changes must be delegated to worktree agents. If uncertain whether a change is trivial, delegate.
 
 **VERBATIM — Polling rule:**
-> After delegating, immediately enter an autonomous polling loop. Never stop polling until all worktrees are merged and cleaned up. Never nudge a worktree agent without reading its last message first.
+> Never nudge a task-role or worktree agent without reading its last message first.
 
 **Preserve in summary form:**
 - **Issue tracking**: If the repo has a remote, create GitHub issues for deferred/cross-cutting bugs. The orchestrator owns issue creation, not agents.
 - **Orchestrator state**: which worktrees exist, their current status (implementing / awaiting review / fix requested / ready to merge / merged), and what action is next for each
-- **Review pipeline**: codex review verdicts per worktree, what issues were found, what fixes were requested, what's still pending
+- **Review pipeline**: task and slice review state, open findings, implementer verification status, and what is still pending
 - **Merge order**: the planned sequence and any blocking dependencies between worktrees
 - **Agent messages**: the last meaningful status from each Pi agent (done, fixing, blocked, etc.)
 - **Quality gates**: whether hooks/linting/CI are set up, and any failures encountered
