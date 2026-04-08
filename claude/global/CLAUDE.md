@@ -19,6 +19,10 @@ dev <repo>                    # Orchestrator session (regular repos — starts C
 
 dev <repo>/<worktree>/pi      # Implementer session (starts Pi)
 dev wt <repo> <branch>        # Add worktree + start pi in /pi sub-session (detached)
+dev task new <repo> <slug>    # Create task artifacts under .cashew/tasks
+dev task open <repo> <slug>   # Open default plan-owner-codex task session
+dev task lock-plan <repo> <slug>   # Lock a reviewed plan
+dev task start-impl <repo> <slug> [worktree]  # Start impl only after plan lock
 dev cleanup <repo>/<worktree> # Remove worktree + branch + all sessions
 dev kill <session>            # Kill a session
 dev pi-status <session>       # Check agent status/last messages
@@ -46,6 +50,114 @@ Run it in the foreground, then return to step 1 and repeat. Do **not** write scr
 
 Only review commits once the agent confirms it's done or asks for review.
 
+## Serious Task Workflow
+
+For non-trivial features, use task artifacts and persistent task-role sessions instead of a one-shot review workflow.
+
+**Control model**
+- The primary orchestrator agent remains in charge.
+- Cashew task commands are orchestration primitives used by the orchestrator.
+- Reviewer and implementer sessions do not advance task state on their own.
+- The orchestrator decides when to ask for review, when to record signoff, when to validate, and when to move the task forward.
+- Each project has its own dedicated orchestrator agent. Different projects have different orchestrators.
+- A project orchestrator may manage multiple active tasks simultaneously.
+
+**Task roles**
+- `plan-owner-codex` — primary planner / plan maintainer
+- `plan-review-codex` — persistent Codex reviewer for plan quality and implementation review
+- `plan-critic-claude` — persistent architecture / risk critic
+- `implementer-codex` — implementation session, opened only after plan lock
+- `implementation-review-codex` — persistent Codex implementation reviewer on the worktree
+- `implementation-critic-claude` — optional persistent implementation auditor
+
+**Default serious-task flow**
+1. Create task artifacts:
+   ```bash
+   dev task new <repo> <slug>
+   ```
+   Immediately declare commit slices. The planner must define them up front:
+   ```bash
+   dev task slice new <repo> <slug> slice-01
+   # add more slices for larger work
+   ```
+2. Keep the planner/reviewer sessions persistent for the full task:
+   ```bash
+   dev task open <repo> <slug> plan-owner-codex
+   dev task open <repo> <slug> plan-review-codex
+   dev task open <repo> <slug> plan-critic-claude
+   ```
+3. As the orchestrator, iterate on `.cashew/tasks/<slug>/plan.md`, the declared slice definitions under `.cashew/tasks/<slug>/slices/`, `plan-review-codex.md`, `plan-review-claude.md`, and `plan-open-issues.md` until blockers are resolved.
+   Validation infers approval state from the review docs. Use explicit signoff only if you need a manual override:
+   ```bash
+   dev task validate <repo> <slug> plan
+   ```
+4. Lock the plan:
+   ```bash
+   dev task lock-plan <repo> <slug>
+   ```
+5. Start implementation:
+   ```bash
+   dev task start-impl <repo> <slug> [worktree]
+   ```
+6. Keep plan-owner, plan-review, and critic sessions alive while implementation proceeds. Use the same task artifacts to review implementation against the locked plan.
+   Operate on the task directly:
+   ```bash
+   dev task send <repo> <slug> implementer-codex "implement the locked plan"
+   dev task poll <repo> <slug>
+   dev task nudge <repo> <slug> implementer-codex "status update and next blocker?"
+   dev task review <repo> <slug>
+   ```
+   For a repo-wide view across many active tasks:
+   ```bash
+   dev project tasks <repo>
+   dev project review <repo>
+   dev project poll <repo>
+   dev project sessions <repo>
+   ```
+7. Run the slice loop for each commit slice. The slice is the commit checkpoint:
+   ```bash
+   dev task slice start <repo> <slug> <slice-id>
+   dev task slice status <repo> <slug> <slice-id>
+   dev task slice validate <repo> <slug> <slice-id>
+   dev task slice approve-commit <repo> <slug> <slice-id>
+   dev task slice committed <repo> <slug> <slice-id> <commit>
+   ```
+   The implementer must independently verify reviewer claims before applying them. Reviewer findings are advisory. The implementer records confirmed, rejected, or partially-applied findings in `implementer-response.md`.
+   Slices progress sequentially. Only the current non-committed slice should be in active implementation/review.
+8. Before merge, run implementation review explicitly:
+   ```bash
+   dev task verify <repo> <slug>
+   dev task open <repo> <slug> implementation-review-codex
+   dev task open <repo> <slug> implementation-critic-claude
+   dev task validate <repo> <slug> implementation
+   dev task ready-merge <repo> <slug>
+   ```
+   `ready-merge` requires every declared slice to already be committed and the worktree to be clean.
+9. After the actual merge, close the task lifecycle explicitly:
+   ```bash
+   dev task merged <repo> <slug> [merge-ref]
+   dev task close <repo> <slug> [--cleanup]
+   ```
+
+**Important:** The task workflow is additive. It does not replace the target repo's engineering guardrails.
+
+## Target Repo Guardrails Are Authoritative
+
+Cashew orchestrates work inside target repos. It does not weaken or replace repo-local standards.
+
+When a target repo already has quality rails, those remain authoritative:
+- `AGENTS.md`
+- pre-commit / pre-push hooks
+- CI workflows
+- linting / formatting
+- typechecking
+- unit tests
+- integration tests
+- DB integration tests
+- build / migration / release checks
+
+When a repo lacks those rails, use Cashew guidance to add them. When they already exist, preserve them and make them part of task done-ness and mergeability.
+
 ## Update Cashew (recommended)
 
 Periodically update Cashew so you have the latest skills/commands. Go to your Cashew repo and pull:
@@ -67,8 +179,8 @@ Worktree branches are local by default. You do **not** need to push them to remo
 
 Your job is planning, quality, delegation, and integration. Follow this sequence:
 
-1. **Plan** — Read the spec/issue, enter plan mode, design the worktree breakdown. If the repo has a remote, check `gh issue list` for open issues relevant to the current work.
-2. **Quality gates** — For new projects, run `/repo-quality-rails-setup` before any delegation. Commit hooks to main so worktree agents inherit them.
+1. **Plan** — For non-trivial work, create a task and use the serious-task workflow above. Treat `.cashew/tasks/<slug>/plan.md` as the source of truth. If the repo has a remote, check `gh issue list` for open issues relevant to the current work.
+2. **Quality gates** — For new projects, run `/repo-quality-rails-setup` before any delegation. For existing projects, preserve existing repo-local rails and make them part of the task verification contract.
 3. **Delegate** — Create worktrees and send work to Pi agents:
    ```bash
    dev wt <repo> <feature>

@@ -47,6 +47,36 @@ dev <repo>/<worktree>/<sub>      # Open sub-session (prefer /pi for worktrees)
 dev new <repo> <git-url>         # Clone repo with worktree structure
 dev init <repo>                  # Create new local repo with worktree structure (no remote)
 dev wt <repo> <branch> [base]    # Add a new worktree for a branch
+dev project tasks <repo>         # Project-level dashboard across active tasks
+dev project review <repo>        # Project orchestrator queue summary
+dev project poll <repo>          # Poll all task role lanes in a project
+dev project sessions <repo>      # Show all task-role session mappings
+dev task new <repo> <slug>       # Create task artifacts in .cashew/tasks/<slug>
+dev task status <repo> <slug>    # Show task state + artifacts
+dev task sessions <repo> <slug>  # Show task role session mappings
+dev task open <repo> <slug> [role] # Open a persistent task role session
+dev task open-current <repo> <slug> [role] # Open the most relevant role for this task
+dev task open-slice <repo> <slug> <slice-id> [role] # Open a role for the current slice
+dev task slice new <repo> <slug> <slice-id> # Declare a commit slice
+dev task slice start <repo> <slug> <slice-id> # Start the current slice
+dev task slice status <repo> <slug> <slice-id> # Show per-slice status
+dev task slice validate <repo> <slug> <slice-id> # Validate one slice + run its checks
+dev task slice request-revision <repo> <slug> <slice-id> # Send current slice back for more work
+dev task slice reopen <repo> <slug> <slice-id> # Reopen current slice for implementation
+dev task slice approve-commit <repo> <slug> <slice-id> # Authorize commit for one slice
+dev task slice committed <repo> <slug> <slice-id> <commit> # Record committed slice
+dev task lock-plan <repo> <slug> # Mark the plan locked
+dev task validate <repo> <slug> [phase] # Validate task artifacts + approvals
+dev task signoff <repo> <slug> <phase> <role> <decision> [note] # Record review signoff
+dev task send <repo> <slug> <role> <message> # Send to a task role session
+dev task poll <repo> <slug>     # Show last status across task roles
+dev task nudge <repo> <slug> <role> <message> # Show status, then send a task-role message
+dev task review <repo> <slug>   # Show task status plus role-session review
+dev task verify <repo> <slug>   # Run verification-contract commands
+dev task start-impl <repo> <slug> [worktree] # Start implementation after plan lock
+dev task ready-merge <repo> <slug> # Mark task ready after implementation validation
+dev task merged <repo> <slug> [merge-ref] # Record that merge actually happened
+dev task close <repo> <slug> [--cleanup] # Close task lifecycle and optionally cleanup worktree
 dev cleanup <repo>/<worktree>    # Remove worktree + branch + session (requires --force if unmerged)
 dev kill <session>               # Kill a specific session
 dev kw <repo> <name>             # Start a knowledge-worker session
@@ -130,6 +160,217 @@ ssh myserver
 dev                          # see what's running
 dev myapp/main/pi            # attach to existing Pi session
 ```
+
+## Task Workflow
+
+Use `dev task ...` for non-trivial work that needs persistent planning and review memory.
+
+The primary orchestrator agent remains the controller of the workflow. These commands are support primitives for the orchestrator. Persistent reviewers and implementers advise or execute, but they do not advance task state autonomously.
+
+For a single project, assume one dedicated orchestrator agent may be managing multiple active tasks at once. Use the `dev project ...` commands to get the project-level view instead of reconstructing it task-by-task.
+
+### Task artifacts
+
+`dev task new <repo> <slug>` creates:
+- `.cashew/tasks/<slug>/task.json`
+- `.cashew/tasks/<slug>/proposal.md`
+- `.cashew/tasks/<slug>/plan.md`
+- `.cashew/tasks/<slug>/plan-review-codex.md`
+- `.cashew/tasks/<slug>/plan-review-claude.md`
+- `.cashew/tasks/<slug>/plan-open-issues.md`
+- `.cashew/tasks/<slug>/implementation-notes.md`
+- `.cashew/tasks/<slug>/implementation-review-codex.md`
+- `.cashew/tasks/<slug>/implementation-review-claude.md`
+- `.cashew/tasks/<slug>/verification-contract.md`
+- `.cashew/tasks/<slug>/slices/`
+
+Persistent sessions help, but these files are the durable task record and the source of truth.
+
+### Commit slices are mandatory
+
+For non-trivial work, the planner must define commit slices up front.
+
+Cashew enforces this by making slices first-class:
+- the plan is not lockable until at least one slice exists
+- large tasks should have multiple slices
+- each slice is its own review/feedback/re-review checkpoint
+- a slice may only be committed after `dev task slice approve-commit ...`
+- slices advance sequentially; only the current non-committed slice may move forward
+
+Each slice lives under:
+- `.cashew/tasks/<slug>/slices/<slice-id>/slice.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/review-codex.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/review-claude.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/implementer-response.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/verification.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/status.json`
+
+Declare slices explicitly:
+```bash
+dev task slice new <repo> <slug> slice-01
+dev task slice new <repo> <slug> slice-02
+```
+
+### Task roles
+
+Supported roles:
+- `plan-owner-codex`
+- `plan-review-codex`
+- `plan-critic-claude`
+- `implementer-codex`
+- `implementation-review-codex`
+- `implementation-critic-claude`
+
+Default:
+```bash
+dev task open <repo> <slug>
+```
+opens `plan-owner-codex`.
+
+Recommended serious-task setup:
+```bash
+dev task new <repo> <slug>
+dev task slice new <repo> <slug> slice-01
+dev task open <repo> <slug> plan-owner-codex
+dev task open <repo> <slug> plan-review-codex
+dev task open <repo> <slug> plan-critic-claude
+dev task validate <repo> <slug> plan
+```
+
+### Plan lock gate
+
+Implementation should not start until the plan is locked:
+```bash
+dev task lock-plan <repo> <slug>
+dev task start-impl <repo> <slug> [worktree]
+```
+
+`dev task start-impl` refuses to proceed until `task.json` has `planLocked = true`.
+
+Implementation review closes the loop:
+```bash
+dev task send <repo> <slug> implementer-codex "implement the locked plan"
+dev task slice start <repo> <slug> slice-01
+dev task review <repo> <slug>
+dev task slice validate <repo> <slug> slice-01
+dev task slice approve-commit <repo> <slug> slice-01
+dev task slice committed <repo> <slug> slice-01 <commit>
+dev task verify <repo> <slug>
+dev task open <repo> <slug> implementation-review-codex
+dev task open <repo> <slug> implementation-critic-claude
+dev task validate <repo> <slug> implementation
+dev task ready-merge <repo> <slug>
+dev task merged <repo> <slug>
+dev task close <repo> <slug> [--cleanup]
+```
+
+`dev task ready-merge` validates implementation artifacts and approvals before moving the task to `ready_to_merge`.
+It also refuses to proceed until every declared slice is in `committed`.
+
+`dev task signoff ...` is still available as a manual override, but the normal path is to let `dev task validate ...` infer approval state directly from the review documents.
+
+After the real merge occurs, record it explicitly with `dev task merged ...`, then close the lifecycle with `dev task close ...`.
+
+### Model pinning
+
+Task roles are pinned by role rather than left to ambient machine defaults.
+
+Current defaults:
+- Codex roles use Pi with:
+  - `--provider ${CASHEW_CODEX_PROVIDER:-openai}`
+  - `--model ${CASHEW_CODEX_MODEL:-gpt-5.4}`
+  - `--thinking ${CASHEW_CODEX_THINKING:-high}`
+  - `--session-dir <task role session dir>`
+- Claude roles use:
+  - `claude --dangerously-skip-permissions --model ${CASHEW_CLAUDE_MODEL}`
+
+For serious task roles:
+- do not launch bare `pi`
+- `CASHEW_CLAUDE_MODEL` must be set for Claude task roles
+
+### Guardrails in target repos
+
+The task workflow is additive. It does not replace target-repo engineering rails.
+
+Existing repo-local standards remain authoritative:
+- `AGENTS.md`
+- hooks
+- CI workflows
+- lint / format
+- typecheck
+- unit tests
+- integration tests
+- DB integration tests
+- build / migration checks
+
+Use `verification-contract.md` to record the concrete checks that apply to the target repo before implementation starts.
+
+For execution, put the actual commands inside fenced `bash` or `sh` blocks. `dev task verify` executes those commands from the worktree when one exists, otherwise from the repo base directory.
+
+### Slice review loop
+
+The slice is the commit checkpoint. The orchestrator should run this loop until the slice is satisfactory:
+
+1. implementer produces uncommitted slice work
+2. reviewers inspect the uncommitted state
+3. implementer independently verifies reviewer claims
+4. implementer revises or rejects findings with rationale
+5. orchestrator re-runs `dev task slice validate ...`
+6. only when clean, authorize commit with `dev task slice approve-commit ...`
+7. after the real commit exists in git, record it with `dev task slice committed ...`
+
+Important:
+- reviewer findings are advisory, not automatically true
+- `implementer-response.md` must explicitly record independently verified reviewer feedback
+- vague “fixed everything” text is not sufficient; use explicit `[confirmed]`, `[rejected]`, or `[partially_applied]` bullets
+- `dev task slice committed ...` verifies the commit exists, is on the current worktree HEAD path, is new relative to `main` when available, and only touches files declared in the slice scope
+- implementation validation also requires a clean worktree before merge readiness
+
+### Project-level orchestration
+
+For a project orchestrator managing several active tasks:
+
+```bash
+dev project tasks <repo>
+dev project review <repo>
+dev project poll <repo>
+dev project sessions <repo>
+```
+
+These commands surface:
+- current slice per task
+- per-task queue/priority bucket
+- role-session mappings
+- cross-task warnings:
+  - shared worktree
+  - overlapping declared slice scopes
+  - overlapping changed files across active tasks
+
+## Review Doc Contract
+
+Review docs are now schema-like enough that validation depends on them.
+
+Required pattern:
+```md
+# ...
+
+Decision: PENDING|APPROVED|BLOCKED
+
+## Blocking Issues
+- none
+
+## Non-Blocking Concerns
+- none
+
+## Sign-off
+State approval explicitly here when ready.
+```
+
+Validation behavior:
+- `Decision: APPROVED` + no blocking content => approval inferred
+- `Decision: BLOCKED` => validation fails
+- `Decision: PENDING` => validation fails
+- meaningful content in blocking sections => validation fails
 
 ## Worktree Workflow
 

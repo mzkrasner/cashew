@@ -1,6 +1,11 @@
 # Cashew
 
-A dev-environment bootstrap that ships Claude skills/commands plus a `dev` session/worktree manager. It does **not** enforce a specific agent; it sets defaults that are easy to override.
+A dev-environment bootstrap and orchestration layer built around:
+- a **Claude primary orchestrator**
+- one dedicated project orchestrator per project
+- persistent **Codex-backed Pi roles** for planning, review, and implementation
+- a `dev` session/worktree/task manager
+- Claude skills/commands for setup and orchestration
 
 ## Example prompts (human → Claude)
 
@@ -23,42 +28,55 @@ A dev-environment bootstrap that ships Claude skills/commands plus a `dev` sessi
 - `dev` creates **tmux** sessions by default.
 - Worktrees are stored at `~/Projects/<repo>/<worktree>`; bare repos live at `~/Projects/<repo>/.bare`.
 - If you choose a different projects folder during setup, export it as `CASHEW_PROJECTS_DIR` so `dev` and agent instructions agree on the same path.
+- Serious-task workflow uses `.cashew/tasks/<slug>/...` artifacts plus persistent task-role sessions.
 
-**Assumed (defaults, not rules)**
-- Claude is used for orchestration at the projects root and repo roots.
-- Claude can send messages to Pi workers running in worktrees.
-- Pi is used for long-running implementation work inside worktrees (often Codex-backed).
+**Assumed (current defaults)**
+- Claude is the **primary orchestrator** at the projects root and repo roots.
+- Codex-backed Pi roles are used for persistent planner/reviewer/implementer sessions.
+- Claude can still send messages to Pi workers running in worktrees.
 
 **Desired (intended workflow)**
 - One repo → many worktrees → many resumable agents.
-- Claude skills/commands handle repo bootstrap and session orchestration.
-- Claude can message Pi workers in worktrees, so humans usually only use `dev` to reattach when they want to inspect or take over a long-running context.
-- Fast context switching with predictable session names.
+- Claude remains the top-level controller.
+- Serious work uses persistent task roles:
+  - `plan-owner-codex`
+  - `plan-review-codex`
+  - `plan-critic-claude`
+  - `implementer-codex`
+  - `implementation-review-codex`
+  - `implementation-critic-claude`
+- Task progression is explicit: plan, review, lock, implement, verify, implementation review, merge.
+- Commit slices are first-class checkpoints inside a task. Large plans should define multiple slices up front.
 
-**Unknown**
-- Your local agent stack, costs, or model choice. `dev` does not pin these.
+**Model defaults**
+- Codex-backed Pi task roles are pinned through:
+  - `CASHEW_CODEX_PROVIDER`
+  - `CASHEW_CODEX_MODEL`
+  - `CASHEW_CODEX_THINKING`
+- Claude roles can be pinned with:
+  - `CASHEW_CLAUDE_MODEL`
 
-If any of the assumptions are wrong for you, keep the tool and change the defaults. The system is built to be repurposed.
+If these defaults are wrong for you, keep the tool and change the role env vars or startup commands.
 
 ## What Cashew Actually Does
 
 Cashew ships Claude skills/commands that call `dev`. Answering the core question:
 
-**What `dev` gives Claude**
+**What `dev` gives the orchestrator**
 - **Persistent sessions** for long-running sub-agents (tmux sessions that survive disconnects).
 - **Worktree-native isolation** so multiple agents can work without interfering (`dev new`, `dev wt`).
 - **Predictable addressing** of agent contexts via `repo/worktree/sub` session names.
-- **Agent defaults** (Pi in worktrees; Claude at repo roots).
+- **Task lifecycle primitives** via `dev task ...`.
+- **Pinned serious-task roles** for Codex-backed Pi sessions and Claude critic sessions.
 - **Queue hooks** for Pi messaging (`dev send-pi`, `dev pi-status`, `dev queue-status`).
 
 Humans mostly use `dev` to reattach when they want to inspect or take over a long-running context.
 
 What it does **not** do:
 - It does **not** enforce Docker usage.
-- It does **not** force a specific agent.
 - It does **not** manage your credentials beyond the setup step.
 
-Checksum: **`dev` is a session/worktree manager with sane defaults; it is not a framework.**
+Checksum: **`dev` is a session/worktree/task manager with an orchestrator-centric workflow; it is not an autonomous workflow engine.**
 
 ## Operational workflows (agent-first)
 
@@ -148,13 +166,66 @@ This is a constraint of session naming, not a feature. If it breaks for you, cha
 
 3. **Optional: install Pi + queue/subscribe/knowledge-worker extensions**:
    ```bash
+   CASHEW_ROOT="$(git rev-parse --show-toplevel)"
    npm install -g @mariozechner/pi-coding-agent
    mkdir -p ~/.pi/agent/extensions
-   cp ~/Projects/cashew/main/pi/extensions/message-queue.ts ~/.pi/agent/extensions/
-   cp ~/Projects/cashew/main/pi/extensions/pi-subscribe.ts ~/.pi/agent/extensions/
-   cp ~/Projects/cashew/main/pi/extensions/kw-role.ts ~/.pi/agent/extensions/
+   ln -sf "$CASHEW_ROOT/pi/extensions/message-queue.ts" ~/.pi/agent/extensions/message-queue.ts
+   ln -sf "$CASHEW_ROOT/pi/extensions/pi-subscribe.ts" ~/.pi/agent/extensions/pi-subscribe.ts
+   ln -sf "$CASHEW_ROOT/pi/extensions/kw-role.ts" ~/.pi/agent/extensions/kw-role.ts
    ```
    This enables: `dev send`, `dev send-pi`, `dev pi-status`, `dev pi-subscribe`, `dev queue-status`, `dev kw`.
+
+4. **Cashew role defaults**
+   Setup now writes role defaults into your shell config so serious-task roles are pinned consistently:
+   ```bash
+   export CASHEW_PROJECTS_DIR=...
+   export CASHEW_CODEX_PROVIDER=openai
+   export CASHEW_CODEX_MODEL=gpt-5.4
+   export CASHEW_CODEX_THINKING=high
+   export CASHEW_CLAUDE_MODEL=<your-claude-alias>
+   ```
+   The core serious-task path uses Pi-backed Codex roles, so no separate global Codex config file is required for that path.
+
+## Serious Task Workflow
+
+For non-trivial work, use persistent task roles and task artifacts:
+
+```bash
+dev project tasks <repo>
+dev project review <repo>
+dev project poll <repo>
+dev project sessions <repo>
+dev task new <repo> <slug>
+dev task slice new <repo> <slug> slice-01
+dev task slice new <repo> <slug> slice-02   # for larger work
+dev task open <repo> <slug> plan-owner-codex
+dev task open <repo> <slug> plan-review-codex
+dev task open <repo> <slug> plan-critic-claude
+dev task validate <repo> <slug> plan
+dev task lock-plan <repo> <slug>
+dev task start-impl <repo> <slug> [worktree]
+dev task send <repo> <slug> implementer-codex "implement the locked plan"
+dev task slice start <repo> <slug> slice-01
+dev task slice validate <repo> <slug> slice-01
+dev task slice approve-commit <repo> <slug> slice-01
+dev task slice committed <repo> <slug> slice-01 <commit>
+dev task verify <repo> <slug>
+dev task validate <repo> <slug> implementation
+dev task ready-merge <repo> <slug>
+```
+
+Important:
+- Claude remains the primary orchestrator.
+- each project has its own dedicated orchestrator agent
+- Task-role sessions are persistent support lanes used by the orchestrator.
+- Validation infers approval state from review docs.
+- `verification-contract.md` should contain fenced runnable `bash`/`sh` checks for the target repo.
+- The plan is not lockable until at least one commit slice exists.
+- Each slice must pass its own review loop before commit authorization.
+- Slices are sequential. Only the current non-committed slice should move through implementation/review.
+- Reviewer findings are advisory; the implementer must independently verify them and record that verification in the slice's `implementer-response.md`.
+- Recording a slice commit is not just bookkeeping; Cashew verifies the commit exists in git and stays within the declared slice scope.
+- project-level commands surface active-task queues, session mappings, and cross-task warnings for shared worktrees, overlapping scopes, and overlapping changed files.
 
 ## Cashew TUI (optional)
 
@@ -222,21 +293,17 @@ cashew/
 │   │   └── CLAUDE.md            # Global context for all Claude sessions
 │   ├── commands/
 │   │   ├── dev.md               # /dev command
-│   │   └── codex-review.md      # /codex-review command
+│   │   └── codex-review.md      # Stateless final Codex review
 │   └── skills/
 │       ├── prompting-worktree-agents/
 │       │   └── SKILL.md         # Socratic prompting loop for worktree agents
 │       └── repo-quality-rails-setup/
 │           └── SKILL.md         # Optional quality rails setup skill
-├── claude/
-│   ├── global/
-│   │   └── CLAUDE.md            # Global context for all Claude sessions
-│   └── commands/
-│       ├── dev.md               # /dev command
-│       └── codex-review.md      # /codex-review command
 └── pi/
     └── extensions/
-        └── message-queue.ts     # Queue integration for Pi
+        ├── message-queue.ts     # Queue integration for Pi
+        ├── pi-subscribe.ts      # Completion subscription
+        └── kw-role.ts           # Knowledge-worker role support
 ```
 
 ## Requirements

@@ -1,6 +1,6 @@
 ---
 name: codex-review
-description: Review code using OpenAI Codex CLI as a strict second-pass reviewer to catch bugs, logic errors, and omissions
+description: Run a stateless final-pass review with OpenAI Codex CLI after the persistent task review workflow has already happened
 argument-hint: [commit|--uncommitted|--base main|file-path]
 allowed-tools:
   - Bash
@@ -9,9 +9,22 @@ allowed-tools:
   - Grep
 ---
 
-# Codex Code Review
+# Codex Final Review
 
-Use OpenAI Codex CLI as a second-pass code reviewer. Run this before merging worktree agent output.
+Use OpenAI Codex CLI as a **stateless final-pass reviewer**.
+
+This command is **not** the primary serious-task review mechanism.
+
+For non-trivial work, the normal path is:
+1. persistent task planning/review via `dev task ...`
+2. implementation review through persistent task roles
+3. `dev task verify ...`
+4. optional final stateless Codex CLI review via `/codex-review`
+
+Use `/codex-review` for:
+- final sanity checks before merge
+- small direct changes
+- one extra detached Codex verdict after the main review loop is complete
 
 ## Arguments
 
@@ -38,7 +51,7 @@ If `CODEX_NOT_FOUND`, stop and tell the user:
 
 Figure out what to review based on arguments and git context.
 
-**Worktree agent review (most common — reviewing before merge):**
+**Worktree review (final pass before merge):**
 ```bash
 codex review --base main
 ```
@@ -84,7 +97,7 @@ Based on the findings, give a clear verdict:
 - **FIX FIRST** — Issues that should be fixed before merging. List them.
 - **RETHINK** — Architectural or design problems that need the agent to redo work
 
-If the verdict is FIX FIRST and you're the orchestrator, send feedback to the worktree agent:
+If the verdict is FIX FIRST and you're the orchestrator, send feedback to the relevant implementer session or reopen the task review flow as needed:
 ```bash
 dev send-pi <repo>/<worktree>/pi "Codex review found issues: <summary>. Fix these before marking done."
 ```

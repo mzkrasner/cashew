@@ -18,6 +18,16 @@
 #   dev new <repo> <url>             - Clone repo as bare + create main worktree
 #   dev init <repo>                  - Create new local repo with worktree structure
 #   dev wt <repo> <branch> [base]    - Add a worktree for a branch
+#   dev task new <repo> <slug>       - Create task artifacts under .cashew/tasks
+#   dev task status <repo> <slug>    - Show task status + artifacts
+#   dev task open <repo> <slug> [role] - Open a persistent task role session
+#   dev task slice new <repo> <slug> <slice-id> - Declare a commit slice
+#   dev task slice status <repo> <slug> <slice-id> - Show slice lifecycle state
+#   dev task slice validate <repo> <slug> <slice-id> - Validate one slice
+#   dev task slice approve-commit <repo> <slug> <slice-id> - Allow this slice to be committed
+#   dev task slice committed <repo> <slug> <slice-id> <commit> - Record committed slice
+#   dev task lock-plan <repo> <slug> - Mark the plan locked
+#   dev task start-impl <repo> <slug> [worktree] - Gate implementation on a locked plan
 #   dev kill <session>               - Kill a specific session
 #   dev kill-all                     - Kill all sessions
 
@@ -26,6 +36,9 @@ if [ -z "${CASHEW_PROJECTS_DIR:-}" ] && [ -d "$HOME/Projects" ]; then
     PROJECTS_DIR="$HOME/Projects"
 fi
 SEP="_"  # Session name separator (internal session names don't allow /)
+TASK_ROOT_REL=".cashew/tasks"
+TASK_SESSION_DIR_NAME="sessions"
+TASK_SLICE_DIR_NAME="slices"
 
 # Colors
 BOLD='\033[1m'
@@ -45,6 +58,2622 @@ to_session_name() {
 # Convert session name back to path-style for display
 to_display_name() {
     echo "$1" | sed "s|${SEP}|/|g"
+}
+
+task_safe() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's|[^a-z0-9._-]|-|g'
+}
+
+repo_base_dir() {
+    local repo="$1"
+    local repo_dir="$PROJECTS_DIR/$repo"
+    if [ -d "$repo_dir/.bare" ]; then
+        echo "$repo_dir/main"
+    else
+        echo "$repo_dir"
+    fi
+}
+
+task_dir() {
+    local repo="$1"
+    local slug="$2"
+    echo "$(repo_base_dir "$repo")/$TASK_ROOT_REL/$slug"
+}
+
+task_meta_file() {
+    local repo="$1"
+    local slug="$2"
+    echo "$(task_dir "$repo" "$slug")/task.json"
+}
+
+task_session_dir() {
+    local repo="$1"
+    local slug="$2"
+    local role="$3"
+    echo "$(task_dir "$repo" "$slug")/$TASK_SESSION_DIR_NAME/$role"
+}
+
+task_session_path() {
+    local repo="$1"
+    local slug="$2"
+    local role="$3"
+    local worktree="${4:-}"
+
+    if [ -n "$worktree" ]; then
+        echo "$repo/$worktree/task-$slug-$role"
+    else
+        echo "$repo/main/task-$slug-$role"
+    fi
+}
+
+task_target_dir() {
+    local repo="$1"
+    local slug="$2"
+    local role="$3"
+    local worktree_override="${4:-}"
+    local repo_dir="$PROJECTS_DIR/$repo"
+    local meta_file
+    local worktree=""
+
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ -n "$worktree_override" ]; then
+        worktree="$worktree_override"
+    elif [ -f "$meta_file" ]; then
+        worktree=$(jq -r '.worktree // empty' "$meta_file" 2>/dev/null)
+    fi
+
+    case "$role" in
+        implementer-codex|implementation-review-codex|implementation-critic-claude)
+            if [ -z "$worktree" ]; then
+                echo ""
+                return
+            fi
+            if [ -d "$repo_dir/.bare" ]; then
+                echo "$repo_dir/$worktree"
+            else
+                echo "$repo_dir"
+            fi
+            ;;
+        *)
+            echo "$(repo_base_dir "$repo")"
+            ;;
+    esac
+}
+
+task_slices_dir() {
+    local repo="$1"
+    local slug="$2"
+    echo "$(task_dir "$repo" "$slug")/$TASK_SLICE_DIR_NAME"
+}
+
+task_slice_dir() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    echo "$(task_slices_dir "$repo" "$slug")/$slice_id"
+}
+
+task_slice_meta_file() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    echo "$(task_slice_dir "$repo" "$slug" "$slice_id")/status.json"
+}
+
+task_slice_review_doc() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local reviewer="$4"
+    local dir
+    dir=$(task_slice_dir "$repo" "$slug" "$slice_id")
+
+    case "$reviewer" in
+        codex)
+            echo "$dir/review-codex.md"
+            ;;
+        claude)
+            echo "$dir/review-claude.md"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+task_slice_list() {
+    local repo="$1"
+    local slug="$2"
+    local slices_dir
+    slices_dir=$(task_slices_dir "$repo" "$slug")
+    if [ ! -d "$slices_dir" ]; then
+        return
+    fi
+    local path
+    for path in "$slices_dir"/*; do
+        [ -d "$path" ] || continue
+        basename "$path"
+    done | sort
+}
+
+task_slice_count() {
+    local repo="$1"
+    local slug="$2"
+    local count=0
+    local slice_id
+    while IFS= read -r slice_id; do
+        [ -n "$slice_id" ] || continue
+        count=$((count + 1))
+    done < <(task_slice_list "$repo" "$slug")
+    echo "$count"
+}
+
+task_current_slice() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id
+    while IFS= read -r slice_id; do
+        [ -n "$slice_id" ] || continue
+        local meta_file
+        meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+        local status
+        status=$(jq -r '.status // "planned"' "$meta_file" 2>/dev/null)
+        if [ "$status" != "committed" ]; then
+            echo "$slice_id"
+            return 0
+        fi
+    done < <(task_slice_list "$repo" "$slug")
+    echo ""
+}
+
+task_require_current_slice() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local current
+    current=$(task_current_slice "$repo" "$slug")
+    if [ -z "$current" ]; then
+        echo "All slices are already committed for $repo/$slug"
+        return 1
+    fi
+    if [ "$current" != "$slice_id" ]; then
+        echo "Slice progression is sequential. Current active slice is $current, not $slice_id."
+        return 1
+    fi
+    return 0
+}
+
+role_is_pi() {
+    case "$1" in
+        plan-owner-codex|plan-review-codex|implementer-codex|implementation-review-codex)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+role_default_command() {
+    local role="$1"
+    local session_dir="$2"
+
+    local codex_provider="${CASHEW_CODEX_PROVIDER:-openai}"
+    local codex_model="${CASHEW_CODEX_MODEL:-gpt-5.4}"
+    local codex_thinking="${CASHEW_CODEX_THINKING:-high}"
+    local claude_model="${CASHEW_CLAUDE_MODEL:-}"
+
+    case "$role" in
+        plan-owner-codex|plan-review-codex|implementer-codex|implementation-review-codex)
+            printf 'pi --provider %q --model %q --thinking %q --session-dir %q' \
+                "$codex_provider" "$codex_model" "$codex_thinking" "$session_dir"
+            ;;
+        plan-critic-claude|implementation-critic-claude)
+            if [ -z "$claude_model" ]; then
+                echo "CASHEW_CLAUDE_MODEL is required for Claude task roles: $role" >&2
+                return 1
+            fi
+            printf 'claude --dangerously-skip-permissions --model %q' "$claude_model"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+task_set_json() {
+    local meta_file="$1"
+    local jq_expr="$2"
+    local tmp
+    tmp=$(mktemp)
+    jq "$jq_expr" "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+}
+
+task_file_has_meaningful_content() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+
+    local stripped
+    stripped=$(
+        sed -E '/^[[:space:]]*#/d' "$file" | \
+        sed -E '/^[[:space:]]*$/d' | \
+        sed -E '/^[[:space:]]*Track open blockers and their resolution here\.[[:space:]]*$/d' | \
+        sed -E '/^[[:space:]]*Document the target repo.*before implementation\.[[:space:]]*$/d' | \
+        sed -E '/^[[:space:]]*Add fenced bash\/sh commands for the checks that must pass before this slice may be committed\.[[:space:]]*$/d' | \
+        sed -E '/^[[:space:]]*(Goal|Why|Constraints|Open Questions|Non-Goals|Affected Files \/ Systems|Risks|Acceptance Criteria|Tests|Rollout \/ Rollback|Blocking Issues|Non-Blocking Concerns|Sign-off|Architecture \/ Risk Issues|Commit Slices|Commit Boundary|Scope \/ Files|Verification|Summary|Reviewer Findings Verification|Additional Context)[[:space:]]*$/d'
+    )
+
+    [ -n "$stripped" ]
+}
+
+task_has_open_checkboxes() {
+    local file="$1"
+    [ -f "$file" ] && grep -Eq '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]' "$file"
+}
+
+task_hash_file() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo ""
+        return
+    fi
+    shasum -a 256 "$file" | awk '{print $1}'
+}
+
+task_section_body() {
+    local file="$1"
+    local heading="$2"
+    awk -v heading="## $heading" '
+        $0 == heading { in_section = 1; next }
+        in_section && /^## / { exit }
+        in_section { print }
+    ' "$file"
+}
+
+task_section_has_meaningful_content() {
+    local file="$1"
+    local heading="$2"
+    local body
+    body=$(task_section_body "$file" "$heading" | \
+        sed -E '/^[[:space:]]*$/d' | \
+        sed -E '/^[[:space:]]*[-*]?[[:space:]]*(none|n\/a|no blocking issues|no architecture issues|no issues)[[:space:]]*$/Id')
+    [ -n "$body" ]
+}
+
+task_review_decision_line() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "missing"
+        return
+    fi
+
+    local decision
+    decision=$(awk -F':' '/^Decision:/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print toupper($2); exit}' "$file")
+    if [ -z "$decision" ]; then
+        echo "missing"
+        return
+    fi
+
+    case "$decision" in
+        APPROVED)
+            echo "approved"
+            ;;
+        BLOCKED)
+            echo "blocked"
+            ;;
+        PENDING)
+            echo "pending"
+            ;;
+        *)
+            echo "invalid"
+            ;;
+    esac
+}
+
+task_review_doc() {
+    local repo="$1"
+    local slug="$2"
+    local phase="$3"
+    local dir
+    dir=$(task_dir "$repo" "$slug")
+
+    case "$phase" in
+        plan-codex)
+            echo "$dir/plan-review-codex.md"
+            ;;
+        plan-claude)
+            echo "$dir/plan-review-claude.md"
+            ;;
+        implementation-codex)
+            echo "$dir/implementation-review-codex.md"
+            ;;
+        implementation-claude)
+            echo "$dir/implementation-review-claude.md"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+task_infer_review_decision() {
+    local file="$1"
+    local blockers_heading="$2"
+    local decision_state
+
+    if [ ! -f "$file" ]; then
+        echo "missing"
+        return
+    fi
+
+    decision_state=$(task_review_decision_line "$file")
+    if [ "$decision_state" = "invalid" ]; then
+        echo "invalid"
+        return
+    fi
+
+    if task_section_has_meaningful_content "$file" "$blockers_heading"; then
+        echo "blocked"
+        return
+    fi
+
+    if [ "$decision_state" = "approved" ]; then
+        echo "approved"
+        return
+    fi
+
+    echo "$decision_state"
+}
+
+task_phase_required_files() {
+    local repo="$1"
+    local slug="$2"
+    local phase="$3"
+    local dir
+    dir=$(task_dir "$repo" "$slug")
+
+    case "$phase" in
+        plan)
+            printf '%s\n' \
+                "$dir/proposal.md" \
+                "$dir/plan.md" \
+                "$dir/plan-review-codex.md" \
+                "$dir/plan-review-claude.md" \
+                "$dir/verification-contract.md"
+            ;;
+        implementation)
+            printf '%s\n' \
+                "$dir/implementation-notes.md" \
+                "$dir/implementation-review-codex.md" \
+                "$dir/implementation-review-claude.md" \
+                "$dir/verification-contract.md"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+task_validate_phase() {
+    local repo="$1"
+    local slug="$2"
+    local phase="$3"
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local failures=()
+    local file
+    while IFS= read -r file; do
+        if [ ! -f "$file" ]; then
+            failures+=("missing:$(basename "$file")")
+        elif ! task_file_has_meaningful_content "$file"; then
+            failures+=("placeholder:$(basename "$file")")
+        fi
+    done < <(task_phase_required_files "$repo" "$slug" "$phase")
+
+    local dir
+    dir=$(task_dir "$repo" "$slug")
+    if [ "$phase" = "plan" ] && task_has_open_checkboxes "$dir/plan-open-issues.md"; then
+        failures+=("open_issues:plan-open-issues.md")
+    fi
+
+    if [ "$phase" = "plan" ]; then
+        local slice_count
+        slice_count=$(task_slice_count "$repo" "$slug")
+        if [ "$slice_count" -lt 1 ]; then
+            failures+=("missing_commit_slices:$TASK_SLICE_DIR_NAME")
+        fi
+        if ! task_section_has_meaningful_content "$dir/plan.md" "Commit Slices"; then
+            failures+=("missing_commit_slice_definition_in_plan:plan.md")
+        fi
+
+        local slice_id
+        while IFS= read -r slice_id; do
+            [ -n "$slice_id" ] || continue
+            local slice_md
+            slice_md="$(task_slice_dir "$repo" "$slug" "$slice_id")/slice.md"
+            if [ ! -f "$slice_md" ]; then
+                failures+=("missing_slice_definition:$slice_id")
+            elif ! task_file_has_meaningful_content "$slice_md"; then
+                failures+=("placeholder_slice_definition:$slice_id")
+            fi
+        done < <(task_slice_list "$repo" "$slug")
+    fi
+
+    local codex_decision=""
+    local claude_decision=""
+    local codex_note=""
+    local claude_note=""
+    if [ "$phase" = "plan" ]; then
+        local plan_codex_doc plan_claude_doc
+        plan_codex_doc=$(task_review_doc "$repo" "$slug" "plan-codex")
+        plan_claude_doc=$(task_review_doc "$repo" "$slug" "plan-claude")
+        codex_decision=$(task_infer_review_decision "$plan_codex_doc" "Blocking Issues")
+        claude_decision=$(task_infer_review_decision "$plan_claude_doc" "Architecture / Risk Issues")
+        codex_note="inferred from plan-review-codex.md"
+        claude_note="inferred from plan-review-claude.md"
+
+        case "$codex_decision" in
+            approved) ;;
+            blocked) failures+=("review_blockers:plan-review-codex.md") ;;
+            pending) failures+=("review_decision_pending:plan-review-codex.md") ;;
+            invalid) failures+=("review_decision_invalid:plan-review-codex.md") ;;
+            missing) failures+=("missing:plan-review-codex.md") ;;
+        esac
+        case "$claude_decision" in
+            approved) ;;
+            blocked) failures+=("review_blockers:plan-review-claude.md") ;;
+            pending) failures+=("review_decision_pending:plan-review-claude.md") ;;
+            invalid) failures+=("review_decision_invalid:plan-review-claude.md") ;;
+            missing) failures+=("missing:plan-review-claude.md") ;;
+        esac
+    else
+        local impl_codex_doc impl_claude_doc
+        impl_codex_doc=$(task_review_doc "$repo" "$slug" "implementation-codex")
+        impl_claude_doc=$(task_review_doc "$repo" "$slug" "implementation-claude")
+        codex_decision=$(task_infer_review_decision "$impl_codex_doc" "Blocking Issues")
+        claude_decision=$(task_infer_review_decision "$impl_claude_doc" "Architecture / Risk Issues")
+        codex_note="inferred from implementation-review-codex.md"
+        claude_note="inferred from implementation-review-claude.md"
+
+        case "$codex_decision" in
+            approved) ;;
+            blocked) failures+=("review_blockers:implementation-review-codex.md") ;;
+            pending) failures+=("review_decision_pending:implementation-review-codex.md") ;;
+            invalid) failures+=("review_decision_invalid:implementation-review-codex.md") ;;
+            missing) failures+=("missing:implementation-review-codex.md") ;;
+        esac
+        case "$claude_decision" in
+            approved) ;;
+            blocked) failures+=("review_blockers:implementation-review-claude.md") ;;
+            pending) failures+=("review_decision_pending:implementation-review-claude.md") ;;
+            invalid) failures+=("review_decision_invalid:implementation-review-claude.md") ;;
+            missing) failures+=("missing:implementation-review-claude.md") ;;
+        esac
+
+        local locked_plan_hash current_plan_hash
+        locked_plan_hash=$(jq -r '.lock.planHash // empty' "$meta_file" 2>/dev/null)
+        current_plan_hash=$(task_hash_file "$dir/plan.md")
+        if [ -n "$locked_plan_hash" ] && [ -n "$current_plan_hash" ] && [ "$locked_plan_hash" != "$current_plan_hash" ]; then
+            failures+=("plan_drift:plan.md")
+        fi
+
+        local target_dir
+        target_dir=$(task_target_git_dir "$repo" "$slug")
+        if [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+            if ! task_git_worktree_clean "$target_dir"; then
+                failures+=("worktree_dirty:$target_dir")
+            fi
+        fi
+
+        local slice_id
+        while IFS= read -r slice_id; do
+            [ -n "$slice_id" ] || continue
+            local slice_meta slice_status slice_commit
+            slice_meta=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+            if [ ! -f "$slice_meta" ]; then
+                failures+=("missing_slice_status:$slice_id")
+                continue
+            fi
+            slice_status=$(jq -r '.status // "unknown"' "$slice_meta" 2>/dev/null)
+            slice_commit=$(jq -r '.commit // empty' "$slice_meta" 2>/dev/null)
+            if [ "$slice_status" != "committed" ]; then
+                failures+=("slice_not_committed:$slice_id")
+                continue
+            fi
+            if [ -z "$slice_commit" ]; then
+                failures+=("slice_missing_commit:$slice_id")
+                continue
+            fi
+            local commit_check
+            commit_check=$(task_slice_verify_commit_against_git "$repo" "$slug" "$slice_id" "$slice_commit")
+            if [ $? -ne 0 ]; then
+                failures+=("slice_commit_invalid:$slice_id:$commit_check")
+            fi
+        done < <(task_slice_list "$repo" "$slug")
+    fi
+
+    local failures_json="[]"
+    if [ ${#failures[@]} -gt 0 ]; then
+        failures_json=$(printf '%s\n' "${failures[@]}" | jq -R . | jq -s '.')
+    fi
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local tmp
+    tmp=$(mktemp)
+    jq \
+        --arg phase "$phase" \
+        --arg now "$now" \
+        --argjson failures "$failures_json" \
+        --arg codexDecision "$codex_decision" \
+        --arg codexNote "$codex_note" \
+        --arg claudeDecision "$claude_decision" \
+        --arg claudeNote "$claude_note" \
+        '
+        .validation[$phase].lastRunAt = $now
+        | .validation[$phase].failures = $failures
+        | .validation[$phase].passed = (($failures | length) == 0)
+        | if $phase == "plan" then
+            .approvals.plan["plan-review-codex"] = {decision: $codexDecision, note: $codexNote, at: $now, source: "inferred"}
+            | .approvals.plan["plan-critic-claude"] = {decision: $claudeDecision, note: $claudeNote, at: $now, source: "inferred"}
+          else
+            .approvals.implementation["implementation-review-codex"] = {decision: $codexDecision, note: $codexNote, at: $now, source: "inferred"}
+            | .approvals.implementation["implementation-critic-claude"] = {decision: $claudeDecision, note: $claudeNote, at: $now, source: "inferred"}
+          end
+        ' \
+        "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+
+    if [ ${#failures[@]} -eq 0 ]; then
+        echo "Validation passed: $repo/$slug ($phase)"
+        return 0
+    fi
+
+    echo "Validation failed: $repo/$slug ($phase)"
+    printf '  - %s\n' "${failures[@]}"
+    return 1
+}
+
+task_signoff() {
+    local repo="$1"
+    local slug="$2"
+    local phase="$3"
+    local role="$4"
+    local decision="$5"
+    local note="${6:-}"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$phase" ] || [ -z "$role" ] || [ -z "$decision" ]; then
+        echo "Usage: dev task signoff <repo> <slug> <plan|implementation> <role> <approved|blocked|revoked> [note]"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    case "$phase:$role" in
+        plan:plan-review-codex|plan:plan-critic-claude|implementation:implementation-review-codex|implementation:implementation-critic-claude)
+            ;;
+        *)
+            echo "Invalid phase/role combination: $phase / $role"
+            exit 1
+            ;;
+    esac
+
+    case "$decision" in
+        approved|blocked|revoked)
+            ;;
+        *)
+            echo "Decision must be one of: approved, blocked, revoked"
+            exit 1
+            ;;
+    esac
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local tmp
+    tmp=$(mktemp)
+    jq \
+        --arg phase "$phase" \
+        --arg role "$role" \
+        --arg decision "$decision" \
+        --arg note "$note" \
+        --arg now "$now" \
+        '
+        .approvals[$phase][$role] = {
+          decision: $decision,
+          note: $note,
+          at: $now,
+          source: "manual"
+        }
+        ' \
+        "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+
+    echo "Recorded signoff: $repo/$slug $phase $role -> $decision"
+}
+
+task_slice_new() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task slice new <repo> <slug> <slice-id>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local safe_id
+    safe_id=$(task_safe "$slice_id")
+    local dir
+    dir=$(task_slice_dir "$repo" "$slug" "$safe_id")
+    if [ -d "$dir" ]; then
+        echo "Slice already exists: $repo/$slug/$safe_id"
+        exit 1
+    fi
+
+    mkdir -p "$dir"
+    cat > "$dir/status.json" <<EOF
+{
+  "id": "$safe_id",
+  "status": "planned",
+  "reviewRound": 0,
+  "approvedToCommit": false,
+  "commit": null,
+  "validation": {
+    "passed": false,
+    "lastRunAt": null,
+    "failures": []
+  },
+  "approvals": {
+    "review-codex": null,
+    "review-claude": null
+  },
+  "verification": {
+    "lastRun": {
+      "at": null,
+      "targetDir": null,
+      "commands": [],
+      "failures": [],
+      "success": false
+    }
+  }
+}
+EOF
+
+    cat > "$dir/slice.md" <<EOF
+# Slice: $safe_id
+
+## Goal
+
+## Commit Boundary
+
+## Scope / Files
+
+## Acceptance Criteria
+
+## Verification
+EOF
+
+    cat > "$dir/review-codex.md" <<'EOF'
+# Codex Slice Review
+
+Decision: PENDING
+
+## Blocking Issues
+
+- none
+
+## Non-Blocking Concerns
+
+- none
+
+## Sign-off
+
+State approval explicitly here when ready.
+EOF
+
+    cat > "$dir/review-claude.md" <<'EOF'
+# Claude Slice Critique
+
+Decision: PENDING
+
+## Architecture / Risk Issues
+
+- none
+
+## Non-Blocking Concerns
+
+- none
+
+## Sign-off
+
+State approval explicitly here when ready.
+EOF
+
+    cat > "$dir/implementer-response.md" <<'EOF'
+# Implementer Response
+
+## Summary
+
+## Reviewer Findings Verification
+
+- [confirmed] Describe a finding you independently verified and how you addressed it.
+- [rejected] Describe a finding you checked and rejected, with rationale.
+- [partially_applied] Describe any finding you applied only in part, with rationale.
+
+## Additional Context
+EOF
+
+    cat > "$dir/verification.md" <<'EOF'
+# Slice Verification
+
+Add fenced bash/sh commands for the checks that must pass before this slice may be committed.
+EOF
+
+    echo "Slice created: $repo/$slug/$safe_id"
+}
+
+task_slice_start() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task slice start <repo> <slug> <slice-id>"
+        exit 1
+    fi
+
+    local task_meta
+    task_meta=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$task_meta" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local task_status
+    task_status=$(jq -r '.status // "unknown"' "$task_meta" 2>/dev/null)
+    if [ "$task_status" != "implementation_in_progress" ]; then
+        echo "Task is not in implementation_in_progress: $repo/$slug"
+        exit 1
+    fi
+
+    task_require_current_slice "$repo" "$slug" "$slice_id" || exit 1
+
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    if [ ! -f "$meta_file" ]; then
+        echo "Slice not found: $repo/$slug/$slice_id"
+        exit 1
+    fi
+
+    task_set_json "$meta_file" '.status = "in_implementation" | .approvedToCommit = false | .commit = null'
+    echo "Slice started: $repo/$slug/$slice_id"
+}
+
+task_slice_request_revision() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task slice request-revision <repo> <slug> <slice-id>"
+        exit 1
+    fi
+
+    task_require_current_slice "$repo" "$slug" "$slice_id" || exit 1
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    [ -f "$meta_file" ] || { echo "Slice not found: $repo/$slug/$slice_id"; exit 1; }
+    task_set_json "$meta_file" '.status = "revision_requested" | .approvedToCommit = false'
+    echo "Slice moved to revision_requested: $repo/$slug/$slice_id"
+}
+
+task_slice_reopen() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task slice reopen <repo> <slug> <slice-id>"
+        exit 1
+    fi
+
+    task_require_current_slice "$repo" "$slug" "$slice_id" || exit 1
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    [ -f "$meta_file" ] || { echo "Slice not found: $repo/$slug/$slice_id"; exit 1; }
+    task_set_json "$meta_file" '.status = "in_implementation" | .approvedToCommit = false'
+    echo "Slice reopened: $repo/$slug/$slice_id"
+}
+
+task_slice_status() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task slice status <repo> <slug> <slice-id>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    if [ ! -f "$meta_file" ]; then
+        echo "Slice not found: $repo/$slug/$slice_id"
+        exit 1
+    fi
+
+    local dir
+    dir=$(task_slice_dir "$repo" "$slug" "$slice_id")
+    local status round approved commit verify_ok
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+    round=$(jq -r '.reviewRound // 0' "$meta_file" 2>/dev/null)
+    approved=$(jq -r '.approvedToCommit // false' "$meta_file" 2>/dev/null)
+    commit=$(jq -r '.commit // empty' "$meta_file" 2>/dev/null)
+    verify_ok=$(jq -r '.verification.lastRun.success // false' "$meta_file" 2>/dev/null)
+
+    echo -e "${BOLD}Slice:${RESET} $repo/$slug/$slice_id"
+    echo -e "${DIM}Dir:${RESET} $dir"
+    echo -e "${DIM}Status:${RESET} $status"
+    echo -e "${DIM}Review round:${RESET} $round"
+    echo -e "${DIM}Approved to commit:${RESET} $approved"
+    echo -e "${DIM}Verification success:${RESET} $verify_ok"
+    if [ -n "$commit" ]; then
+        echo -e "${DIM}Commit:${RESET} $commit"
+    fi
+    echo ""
+    echo "Approvals:"
+    echo "  review-codex: $(jq -r '.approvals["review-codex"].decision // "pending"' "$meta_file" 2>/dev/null)"
+    echo "  review-claude: $(jq -r '.approvals["review-claude"].decision // "pending"' "$meta_file" 2>/dev/null)"
+    echo ""
+    echo "Validation:"
+    echo "  passed: $(jq -r '.validation.passed // false' "$meta_file" 2>/dev/null)"
+    jq -r '.validation.failures[]? // empty' "$meta_file" 2>/dev/null | sed 's/^/    - /'
+}
+
+task_slice_validate() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task slice validate <repo> <slug> <slice-id>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    if [ ! -f "$meta_file" ]; then
+        echo "Slice not found: $repo/$slug/$slice_id"
+        exit 1
+    fi
+
+    task_require_current_slice "$repo" "$slug" "$slice_id" || exit 1
+
+    local dir
+    dir=$(task_slice_dir "$repo" "$slug" "$slice_id")
+    local failures=()
+
+    local f
+    for f in slice.md review-codex.md review-claude.md implementer-response.md verification.md; do
+        if [ ! -f "$dir/$f" ]; then
+            failures+=("missing:$f")
+        elif ! task_file_has_meaningful_content "$dir/$f"; then
+            failures+=("placeholder:$f")
+        fi
+    done
+
+    local codex_doc claude_doc codex_decision claude_decision
+    codex_doc=$(task_slice_review_doc "$repo" "$slug" "$slice_id" codex)
+    claude_doc=$(task_slice_review_doc "$repo" "$slug" "$slice_id" claude)
+    codex_decision=$(task_infer_review_decision "$codex_doc" "Blocking Issues")
+    claude_decision=$(task_infer_review_decision "$claude_doc" "Architecture / Risk Issues")
+
+    case "$codex_decision" in
+        approved) ;;
+        blocked) failures+=("review_blockers:review-codex.md") ;;
+        pending) failures+=("review_decision_pending:review-codex.md") ;;
+        invalid) failures+=("review_decision_invalid:review-codex.md") ;;
+        missing) failures+=("missing:review-codex.md") ;;
+    esac
+    case "$claude_decision" in
+        approved) ;;
+        blocked) failures+=("review_blockers:review-claude.md") ;;
+        pending) failures+=("review_decision_pending:review-claude.md") ;;
+        invalid) failures+=("review_decision_invalid:review-claude.md") ;;
+        missing) failures+=("missing:review-claude.md") ;;
+    esac
+
+    if ! task_slice_has_verified_findings "$dir/implementer-response.md"; then
+        failures+=("missing_verified_review_feedback:implementer-response.md")
+    fi
+
+    local target_dir
+    target_dir=$(task_target_dir "$repo" "$slug" "implementer-codex")
+    if [ -z "$target_dir" ]; then
+        target_dir=$(repo_base_dir "$repo")
+    fi
+
+    local slice_file
+    slice_file="$dir/slice.md"
+    local scopes=()
+    local scope_entry
+    while IFS= read -r scope_entry; do
+        [ -n "$scope_entry" ] || continue
+        scopes+=("$scope_entry")
+    done < <(task_slice_scope_entries "$slice_file")
+    if [ ${#scopes[@]} -eq 0 ]; then
+        failures+=("missing_scope_entries:slice.md")
+    elif [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+        local changed_file
+        while IFS= read -r changed_file; do
+            [ -n "$changed_file" ] || continue
+            if ! task_slice_file_in_scope "$changed_file" "${scopes[@]}"; then
+                failures+=("out_of_scope_worktree_file:$changed_file")
+            fi
+        done < <(task_git_changed_files "$target_dir")
+    fi
+
+    local commands
+    commands=$(task_slice_extract_verification_commands "$repo" "$slug" "$slice_id")
+    if [ -z "$commands" ]; then
+        failures+=("missing_verification_commands:verification.md")
+    fi
+
+    local executed=()
+    local verify_failures=()
+    local cmd
+    while IFS= read -r cmd; do
+        [ -z "$cmd" ] && continue
+        [[ "$cmd" =~ ^[[:space:]]*# ]] && continue
+        executed+=("$cmd")
+        echo "Running slice check: $cmd"
+        if ! (cd "$target_dir" && bash -lc "$cmd"); then
+            verify_failures+=("$cmd")
+            failures+=("verification_failed:$cmd")
+        fi
+    done <<< "$commands"
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local failures_json executed_json verify_failures_json
+    failures_json=$(task_slice_validation_failures_json "${failures[@]}")
+    if [ ${#executed[@]} -gt 0 ]; then
+        executed_json=$(printf '%s\n' "${executed[@]}" | jq -R . | jq -s '.')
+    else
+        executed_json='[]'
+    fi
+    if [ ${#verify_failures[@]} -gt 0 ]; then
+        verify_failures_json=$(printf '%s\n' "${verify_failures[@]}" | jq -R . | jq -s '.')
+    else
+        verify_failures_json='[]'
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    jq \
+        --arg now "$now" \
+        --arg codexDecision "$codex_decision" \
+        --arg claudeDecision "$claude_decision" \
+        --argjson failures "$failures_json" \
+        --argjson executed "$executed_json" \
+        --argjson verifyFailures "$verify_failures_json" \
+        '
+        .validation = {
+          passed: (($failures | length) == 0),
+          lastRunAt: $now,
+          failures: $failures
+        }
+        | .approvals["review-codex"] = {decision: $codexDecision, at: $now, source: "inferred"}
+        | .approvals["review-claude"] = {decision: $claudeDecision, at: $now, source: "inferred"}
+        | .verification.lastRun = {
+            at: $now,
+            commands: $executed,
+            failures: $verifyFailures,
+            success: (($verifyFailures | length) == 0)
+          }
+        | .reviewRound = ((.reviewRound // 0) + 1)
+        | .status = (if ($failures | length) == 0 then "in_review" else "revision_requested" end)
+        ' \
+        "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+
+    if [ ${#failures[@]} -eq 0 ]; then
+        echo "Slice validation passed: $repo/$slug/$slice_id"
+        return 0
+    fi
+
+    echo "Slice validation failed: $repo/$slug/$slice_id"
+    printf '  - %s\n' "${failures[@]}"
+    return 1
+}
+
+task_slice_approve_commit() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task slice approve-commit <repo> <slug> <slice-id>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    if [ ! -f "$meta_file" ]; then
+        echo "Slice not found: $repo/$slug/$slice_id"
+        exit 1
+    fi
+
+    task_require_current_slice "$repo" "$slug" "$slice_id" || exit 1
+
+    task_slice_validate "$repo" "$slug" "$slice_id" || exit 1
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    task_set_json "$meta_file" ".approvedToCommit = true | .status = \"approved_to_commit\" | .approvedAt = \"$now\""
+    echo "Slice approved to commit: $repo/$slug/$slice_id"
+}
+
+task_slice_committed() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local commit_ref="$4"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ] || [ -z "$commit_ref" ]; then
+        echo "Usage: dev task slice committed <repo> <slug> <slice-id> <commit>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    if [ ! -f "$meta_file" ]; then
+        echo "Slice not found: $repo/$slug/$slice_id"
+        exit 1
+    fi
+
+    task_require_current_slice "$repo" "$slug" "$slice_id" || exit 1
+
+    local approved
+    approved=$(jq -r '.approvedToCommit // false' "$meta_file" 2>/dev/null)
+    if [ "$approved" != "true" ]; then
+        echo "Slice is not approved_to_commit: $repo/$slug/$slice_id"
+        exit 1
+    fi
+
+    local commit_check
+    commit_check=$(task_slice_verify_commit_against_git "$repo" "$slug" "$slice_id" "$commit_ref")
+    if [ $? -ne 0 ]; then
+        echo "Slice commit verification failed: $commit_check"
+        exit 1
+    fi
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    task_set_json "$meta_file" ".commit = \"$commit_ref\" | .committedAt = \"$now\" | .status = \"committed\""
+    echo "Slice committed: $repo/$slug/$slice_id -> $commit_ref"
+}
+
+task_all_slices_committed() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id
+    local count=0
+    while IFS= read -r slice_id; do
+        [ -n "$slice_id" ] || continue
+        count=$((count + 1))
+        local meta_file
+        meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+        if [ ! -f "$meta_file" ]; then
+            return 1
+        fi
+        local status
+        status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+        if [ "$status" != "committed" ]; then
+            return 1
+        fi
+    done < <(task_slice_list "$repo" "$slug")
+
+    [ "$count" -gt 0 ]
+}
+
+task_mark_ready_merge() {
+    local repo="$1"
+    local slug="$2"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task ready-merge <repo> <slug>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    task_validate_phase "$repo" "$slug" implementation || exit 1
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if ! task_all_slices_committed "$repo" "$slug"; then
+        echo "Not all slices are committed for $repo/$slug"
+        echo "Each declared slice must reach committed before ready-merge."
+        exit 1
+    fi
+    local verify_ok
+    verify_ok=$(jq -r '.verification.lastRun.success // false' "$meta_file" 2>/dev/null)
+    if [ "$verify_ok" != "true" ]; then
+        echo "Verification has not passed for $repo/$slug"
+        echo "Run: dev task verify $repo $slug"
+        exit 1
+    fi
+    task_set_json "$meta_file" '.status = "ready_to_merge"'
+    echo "Task ready to merge: $repo/$slug"
+}
+
+task_mark_merged() {
+    local repo="$1"
+    local slug="$2"
+    local merge_ref="${3:-}"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task merged <repo> <slug> [merge-ref]"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local status
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+    if [ "$status" != "ready_to_merge" ]; then
+        echo "Task is not ready_to_merge: $repo/$slug (current: $status)"
+        exit 1
+    fi
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local tmp
+    tmp=$(mktemp)
+    jq \
+        --arg now "$now" \
+        --arg mergeRef "$merge_ref" \
+        '
+        .status = "merged"
+        | .merged = {
+            at: $now,
+            ref: (if $mergeRef == "" then null else $mergeRef end)
+          }
+        ' \
+        "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+
+    echo "Task marked merged: $repo/$slug"
+}
+
+task_close() {
+    local repo="$1"
+    local slug="$2"
+    local mode="${3:-}"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task close <repo> <slug> [--cleanup]"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local status
+    local worktree
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+    worktree=$(jq -r '.worktree // empty' "$meta_file" 2>/dev/null)
+
+    if [ "$status" != "merged" ]; then
+        echo "Task is not merged: $repo/$slug (current: $status)"
+        exit 1
+    fi
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    task_set_json "$meta_file" ".status = \"closed\" | .closed = {at: \"$now\"}"
+
+    if [ "$mode" = "--cleanup" ] && [ -n "$worktree" ]; then
+        cleanup_worktree "$repo/$worktree"
+    fi
+
+    echo "Task closed: $repo/$slug"
+}
+
+task_next_actions() {
+    local repo="$1"
+    local slug="$2"
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+
+    local status
+    local locked
+    local plan_validation
+    local impl_validation
+    local verify_ok
+    local slice_count
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+    locked=$(jq -r '.planLocked // false' "$meta_file" 2>/dev/null)
+    plan_validation=$(jq -r '.validation.plan.passed // false' "$meta_file" 2>/dev/null)
+    impl_validation=$(jq -r '.validation.implementation.passed // false' "$meta_file" 2>/dev/null)
+    verify_ok=$(jq -r '.verification.lastRun.success // false' "$meta_file" 2>/dev/null)
+    slice_count=$(task_slice_count "$repo" "$slug")
+
+    if [ "$locked" != "true" ]; then
+        if [ "$slice_count" -lt 1 ]; then
+            echo "Declare commit slices before locking the plan: dev task slice new $repo $slug <slice-id>"
+        fi
+        echo "Resolve plan review docs and signoffs, then run: dev task validate $repo $slug plan"
+        echo "When clean, run: dev task lock-plan $repo $slug"
+        return
+    fi
+
+    if [ "$status" = "plan_locked" ]; then
+        echo "Start implementation: dev task start-impl $repo $slug [worktree]"
+        echo "Then orchestrate the implementer with: dev task send $repo $slug implementer-codex \"...\""
+        return
+    fi
+
+    if [ "$status" = "implementation_in_progress" ]; then
+        local next_slice=""
+        while IFS= read -r next_slice; do
+            [ -n "$next_slice" ] || continue
+            local slice_meta
+            slice_meta=$(task_slice_meta_file "$repo" "$slug" "$next_slice")
+            local slice_status
+            slice_status=$(jq -r '.status // "planned"' "$slice_meta" 2>/dev/null)
+            if [ "$slice_status" != "committed" ]; then
+                echo "Current slice checkpoint: dev task slice status $repo $slug $next_slice"
+                if [ "$slice_status" = "planned" ]; then
+                    echo "Begin this slice: dev task slice start $repo $slug $next_slice"
+                fi
+                echo "Run iterative slice review until approval: dev task slice validate $repo $slug $next_slice"
+                echo "When satisfactory, authorize commit: dev task slice approve-commit $repo $slug $next_slice"
+                echo "After the implementer commits, record it: dev task slice committed $repo $slug $next_slice <commit>"
+                return
+            fi
+        done < <(task_slice_list "$repo" "$slug")
+
+        echo "Run task review: dev task review $repo $slug"
+        echo "Update implementation review docs, record signoffs, and run: dev task verify $repo $slug"
+        return
+    fi
+
+    if [ "$status" = "ready_to_merge" ]; then
+        echo "Merge the work, then record it: dev task merged $repo $slug [merge-ref]"
+        echo "After merge, finish lifecycle: dev task close $repo $slug [--cleanup]"
+        return
+    fi
+
+    if [ "$status" = "merged" ]; then
+        echo "Finalize the task: dev task close $repo $slug [--cleanup]"
+        return
+    fi
+
+    if [ "$status" = "closed" ]; then
+        echo "Task lifecycle complete."
+        return
+    fi
+
+    if [ "$impl_validation" != "true" ] || [ "$verify_ok" != "true" ]; then
+        echo "Fix implementation review blockers or verification failures."
+        echo "Then run: dev task validate $repo $slug implementation"
+        echo "And: dev task verify $repo $slug"
+        return
+    fi
+
+    echo "Mark merge-ready: dev task ready-merge $repo $slug"
+}
+
+list_repo_tasks() {
+    local repo="$1"
+    local base_dir
+    base_dir=$(repo_base_dir "$repo")
+    local tasks_dir="$base_dir/$TASK_ROOT_REL"
+
+    if [ ! -d "$tasks_dir" ]; then
+        return
+    fi
+
+    local printed=0
+    local task_path
+    for task_path in "$tasks_dir"/*; do
+        [ -d "$task_path" ] || continue
+        local slug
+        local meta_file
+        local status
+        local locked
+        local slices
+        slug=$(basename "$task_path")
+        meta_file="$task_path/task.json"
+        status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+        locked=$(jq -r '.planLocked // false' "$meta_file" 2>/dev/null)
+        slices=$(task_slice_count "$repo" "$slug")
+        if [ "$printed" -eq 0 ]; then
+            echo -e "      ${MAGENTA}Tasks${RESET}"
+            printed=1
+        fi
+        echo -e "          └─ ${CYAN}$slug${RESET} ${DIM}[$status, planLocked=$locked, slices=$slices]${RESET}"
+    done
+}
+
+list_repo_task_slugs() {
+    local repo="$1"
+    local base_dir
+    base_dir=$(repo_base_dir "$repo")
+    local tasks_dir="$base_dir/$TASK_ROOT_REL"
+    if [ ! -d "$tasks_dir" ]; then
+        return
+    fi
+    local task_path
+    for task_path in "$tasks_dir"/*; do
+        [ -d "$task_path" ] || continue
+        basename "$task_path"
+    done | sort
+}
+
+task_role_backend_label() {
+    local repo="$1"
+    local slug="$2"
+    local role="$3"
+    local session_path
+    session_path=$(task_role_session_path "$repo" "$slug" "$role")
+    local session_name
+    session_name=$(to_session_name "$session_path")
+    local backend
+    backend=$(session_backend "$session_name")
+    if [ -z "$backend" ]; then
+        echo "not_started"
+    else
+        echo "$backend"
+    fi
+}
+
+task_summary_line() {
+    local repo="$1"
+    local slug="$2"
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    [ -f "$meta_file" ] || return
+
+    local status worktree current_slice slice_status verify_ok
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+    worktree=$(jq -r '.worktree // empty' "$meta_file" 2>/dev/null)
+    current_slice=$(task_current_slice "$repo" "$slug")
+    if [ -n "$current_slice" ]; then
+        slice_status=$(jq -r '.status // "unknown"' "$(task_slice_meta_file "$repo" "$slug" "$current_slice")" 2>/dev/null)
+    else
+        slice_status="-"
+    fi
+    verify_ok=$(jq -r '.verification.lastRun.success // false' "$meta_file" 2>/dev/null)
+    echo "$slug|$status|${worktree:-main}|${current_slice:-none}|$slice_status|$verify_ok"
+}
+
+task_priority_bucket() {
+    local repo="$1"
+    local slug="$2"
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    [ -f "$meta_file" ] || return
+
+    local status locked
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+    locked=$(jq -r '.planLocked // false' "$meta_file" 2>/dev/null)
+
+    if [ "$locked" != "true" ]; then
+        echo "plan_work"
+        return
+    fi
+    if [ "$status" = "ready_to_merge" ]; then
+        echo "ready_to_merge"
+        return
+    fi
+    if [ "$status" = "merged" ]; then
+        echo "ready_to_close"
+        return
+    fi
+    if [ "$status" = "implementation_in_progress" ]; then
+        local current_slice
+        current_slice=$(task_current_slice "$repo" "$slug")
+        if [ -n "$current_slice" ]; then
+            local slice_meta slice_status approved
+            slice_meta=$(task_slice_meta_file "$repo" "$slug" "$current_slice")
+            slice_status=$(jq -r '.status // "planned"' "$slice_meta" 2>/dev/null)
+            approved=$(jq -r '.approvedToCommit // false' "$slice_meta" 2>/dev/null)
+            if [ "$approved" = "true" ] || [ "$slice_status" = "approved_to_commit" ]; then
+                echo "ready_for_slice_commit"
+                return
+            fi
+            case "$slice_status" in
+                revision_requested)
+                    echo "waiting_on_implementer"
+                    return
+                    ;;
+                in_review)
+                    echo "waiting_on_orchestrator"
+                    return
+                    ;;
+                planned|in_implementation)
+                    echo "in_flight"
+                    return
+                    ;;
+            esac
+        fi
+    fi
+    echo "other"
+}
+
+project_conflicts() {
+    local repo="$1"
+    local warnings=()
+    local slug_a slug_b
+
+    while IFS= read -r slug_a; do
+        [ -n "$slug_a" ] || continue
+        local meta_a
+        meta_a=$(task_meta_file "$repo" "$slug_a")
+        local status_a worktree_a
+        status_a=$(jq -r '.status // "unknown"' "$meta_a" 2>/dev/null)
+        worktree_a=$(jq -r '.worktree // empty' "$meta_a" 2>/dev/null)
+
+        if [ "$status_a" = "implementation_in_progress" ] && [ -n "$worktree_a" ]; then
+            while IFS= read -r slug_b; do
+                [ -n "$slug_b" ] || continue
+                [ "$slug_a" = "$slug_b" ] && continue
+                local meta_b status_b worktree_b
+                meta_b=$(task_meta_file "$repo" "$slug_b")
+                status_b=$(jq -r '.status // "unknown"' "$meta_b" 2>/dev/null)
+                worktree_b=$(jq -r '.worktree // empty' "$meta_b" 2>/dev/null)
+                if [ "$status_b" = "implementation_in_progress" ] && [ -n "$worktree_b" ] && [ "$worktree_a" = "$worktree_b" ]; then
+                    warnings+=("shared_worktree:$slug_a:$slug_b:$worktree_a")
+                fi
+            done < <(list_repo_task_slugs "$repo")
+        fi
+
+        local target_a
+        target_a=$(task_target_git_dir "$repo" "$slug_a")
+        if [ "$status_a" = "implementation_in_progress" ] && [ -d "$target_a" ] && git -C "$target_a" rev-parse --git-dir >/dev/null 2>&1; then
+            while IFS= read -r slug_b; do
+                [ -n "$slug_b" ] || continue
+                [[ "$slug_a" > "$slug_b" ]] || continue
+                local meta_b status_b target_b
+                meta_b=$(task_meta_file "$repo" "$slug_b")
+                status_b=$(jq -r '.status // "unknown"' "$meta_b" 2>/dev/null)
+                [ "$status_b" = "implementation_in_progress" ] || continue
+                target_b=$(task_target_git_dir "$repo" "$slug_b")
+                [ -d "$target_b" ] || continue
+                git -C "$target_b" rev-parse --git-dir >/dev/null 2>&1 || continue
+
+                local file_a
+                while IFS= read -r file_a; do
+                    [ -n "$file_a" ] || continue
+                    local file_b
+                    while IFS= read -r file_b; do
+                        [ -n "$file_b" ] || continue
+                        if [ "$file_a" = "$file_b" ]; then
+                            warnings+=("overlapping_changed_file:$slug_a:$slug_b:$file_a")
+                        fi
+                    done < <(task_git_changed_files "$target_b")
+                done < <(task_git_changed_files "$target_a")
+            done < <(list_repo_task_slugs "$repo")
+        fi
+
+        local current_a
+        current_a=$(task_current_slice "$repo" "$slug_a")
+        if [ -n "$current_a" ]; then
+            local slice_file_a
+            slice_file_a="$(task_slice_dir "$repo" "$slug_a" "$current_a")/slice.md"
+            local scopes_a=()
+            local s_a
+            while IFS= read -r s_a; do
+                [ -n "$s_a" ] || continue
+                scopes_a+=("$s_a")
+            done < <(task_slice_scope_entries "$slice_file_a")
+
+            while IFS= read -r slug_b; do
+                [ -n "$slug_b" ] || continue
+                [[ "$slug_a" > "$slug_b" ]] || continue
+                local current_b
+                current_b=$(task_current_slice "$repo" "$slug_b")
+                [ -n "$current_b" ] || continue
+                local slice_file_b
+                slice_file_b="$(task_slice_dir "$repo" "$slug_b" "$current_b")/slice.md"
+                local s_b
+                while IFS= read -r s_b; do
+                    [ -n "$s_b" ] || continue
+                    local s1
+                    for s1 in "${scopes_a[@]}"; do
+                        [ -n "$s1" ] || continue
+                        if [ "$s1" = "$s_b" ] || [[ "$s1" == "$s_b/"* ]] || [[ "$s_b" == "$s1/"* ]]; then
+                            warnings+=("overlapping_scope:$slug_a:$current_a:$slug_b:$current_b:$s1:$s_b")
+                        fi
+                    done
+                done < <(task_slice_scope_entries "$slice_file_b")
+            done < <(list_repo_task_slugs "$repo")
+        fi
+    done < <(list_repo_task_slugs "$repo")
+
+    printf '%s\n' "${warnings[@]}" | sed '/^$/d' | sort -u
+}
+
+project_tasks_dashboard() {
+    local repo="$1"
+    if [ -z "$repo" ]; then
+        echo "Usage: dev project tasks <repo>"
+        exit 1
+    fi
+
+    echo -e "${BOLD}Project Tasks:${RESET} $repo"
+    local found=0
+    local slug
+    while IFS= read -r slug; do
+        [ -n "$slug" ] || continue
+        found=1
+        IFS='|' read -r name status worktree current_slice slice_status verify_ok <<< "$(task_summary_line "$repo" "$slug")"
+        local bucket
+        bucket=$(task_priority_bucket "$repo" "$slug")
+        echo "  - $name [status=$status, worktree=$worktree, currentSlice=$current_slice, sliceState=$slice_status, verify=$verify_ok, queue=$bucket]"
+    done < <(list_repo_task_slugs "$repo")
+    if [ "$found" -eq 0 ]; then
+        echo "  - none"
+    fi
+
+    echo ""
+    echo "Conflicts:"
+    local warnings
+    warnings=$(project_conflicts "$repo")
+    if [ -n "$warnings" ]; then
+        echo "$warnings" | sed 's/^/  - /'
+    else
+        echo "  - none"
+    fi
+}
+
+project_review() {
+    local repo="$1"
+    if [ -z "$repo" ]; then
+        echo "Usage: dev project review <repo>"
+        exit 1
+    fi
+
+    project_tasks_dashboard "$repo"
+    echo ""
+    echo "Orchestrator queue:"
+    local slug
+    local found=0
+    while IFS= read -r slug; do
+        [ -n "$slug" ] || continue
+        found=1
+        local bucket
+        bucket=$(task_priority_bucket "$repo" "$slug")
+        echo "  - $slug: $bucket"
+        task_next_actions "$repo" "$slug" | sed 's/^/      /'
+    done < <(list_repo_task_slugs "$repo")
+    if [ "$found" -eq 0 ]; then
+        echo "  - none"
+    fi
+}
+
+project_poll() {
+    local repo="$1"
+    if [ -z "$repo" ]; then
+        echo "Usage: dev project poll <repo>"
+        exit 1
+    fi
+
+    local slug
+    local found=0
+    while IFS= read -r slug; do
+        [ -n "$slug" ] || continue
+        found=1
+        echo "=== $slug ==="
+        task_poll "$repo" "$slug"
+        echo ""
+    done < <(list_repo_task_slugs "$repo")
+    if [ "$found" -eq 0 ]; then
+        echo "No tasks for project: $repo"
+    fi
+}
+
+project_sessions() {
+    local repo="$1"
+    if [ -z "$repo" ]; then
+        echo "Usage: dev project sessions <repo>"
+        exit 1
+    fi
+
+    local slug
+    local found=0
+    while IFS= read -r slug; do
+        [ -n "$slug" ] || continue
+        found=1
+        echo "$slug:"
+        local role
+        for role in plan-owner-codex plan-review-codex plan-critic-claude implementer-codex implementation-review-codex implementation-critic-claude; do
+            echo "  - $role: $(task_role_session_path "$repo" "$slug" "$role") [$(task_role_backend_label "$repo" "$slug" "$role")]"
+        done
+    done < <(list_repo_task_slugs "$repo")
+    if [ "$found" -eq 0 ]; then
+        echo "No tasks for project: $repo"
+    fi
+}
+
+task_sessions() {
+    local repo="$1"
+    local slug="$2"
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task sessions <repo> <slug>"
+        exit 1
+    fi
+
+    local role
+    for role in plan-owner-codex plan-review-codex plan-critic-claude implementer-codex implementation-review-codex implementation-critic-claude; do
+        echo "$role: $(task_role_session_path "$repo" "$slug" "$role") [$(task_role_backend_label "$repo" "$slug" "$role")]"
+    done
+}
+
+task_open_current() {
+    local repo="$1"
+    local slug="$2"
+    local role="${3:-}"
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task open-current <repo> <slug> [role]"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    [ -f "$meta_file" ] || { echo "Task not found: $repo/$slug"; exit 1; }
+    local status
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+
+    if [ -z "$role" ]; then
+        if [ "$status" = "implementation_in_progress" ] || [ "$status" = "ready_to_merge" ] || [ "$status" = "merged" ]; then
+            role="implementer-codex"
+        else
+            role="plan-owner-codex"
+        fi
+    fi
+    task_role_open "$repo" "$slug" "$role"
+}
+
+task_open_slice() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local role="${4:-implementer-codex}"
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$slice_id" ]; then
+        echo "Usage: dev task open-slice <repo> <slug> <slice-id> [role]"
+        exit 1
+    fi
+    task_require_current_slice "$repo" "$slug" "$slice_id" || exit 1
+    task_role_open "$repo" "$slug" "$role"
+}
+
+task_role_session_path() {
+    local repo="$1"
+    local slug="$2"
+    local role="$3"
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    local worktree
+    worktree=$(jq -r '.worktree // empty' "$meta_file" 2>/dev/null)
+
+    if [[ "$role" == implementer-codex || "$role" == implementation-review-codex || "$role" == implementation-critic-claude ]]; then
+        task_session_path "$repo" "$slug" "$role" "$worktree"
+    else
+        task_session_path "$repo" "$slug" "$role"
+    fi
+}
+
+task_send() {
+    local repo="$1"
+    local slug="$2"
+    local role="$3"
+    shift 3
+    local message="$*"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$role" ] || [ -z "$message" ]; then
+        echo "Usage: dev task send <repo> <slug> <role> <message>"
+        exit 1
+    fi
+
+    local session_path
+    session_path=$(task_role_session_path "$repo" "$slug" "$role")
+    if role_is_pi "$role"; then
+        send_pi "$session_path" "$message"
+    else
+        send_keys "$session_path" "$message" Enter
+    fi
+}
+
+task_review() {
+    local repo="$1"
+    local slug="$2"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task review <repo> <slug>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    task_status "$repo" "$slug"
+    echo ""
+    echo "Slice checkpoints:"
+    local slice_id
+    while IFS= read -r slice_id; do
+        [ -n "$slice_id" ] || continue
+        local slice_meta slice_status round
+        slice_meta=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+        slice_status=$(jq -r '.status // "unknown"' "$slice_meta" 2>/dev/null)
+        round=$(jq -r '.reviewRound // 0' "$slice_meta" 2>/dev/null)
+        echo "  - $slice_id: $slice_status (reviewRound=$round)"
+    done < <(task_slice_list "$repo" "$slug")
+    echo ""
+    echo "Role session review:"
+    local role
+    for role in plan-owner-codex plan-review-codex plan-critic-claude implementer-codex implementation-review-codex implementation-critic-claude; do
+        local session_path
+        session_path=$(task_role_session_path "$repo" "$slug" "$role")
+        local session_name
+        session_name=$(to_session_name "$session_path")
+        local backend
+        backend=$(session_backend "$session_name")
+        if [ -z "$backend" ]; then
+            echo "  - $role: not started"
+            continue
+        fi
+        echo "  - $role: $session_path"
+        if role_is_pi "$role"; then
+            pi_status "$session_path" --messages 1
+        else
+            local session_name
+            session_name=$(to_session_name "$session_path")
+            local pane_cmd
+            pane_cmd=$(tmux display-message -t "$session_name" -p '#{pane_current_command}' 2>/dev/null || echo "not-running")
+            echo "    backend: claude/tmux"
+            echo "    pane: $pane_cmd"
+        fi
+        echo ""
+    done
+}
+
+task_poll() {
+    local repo="$1"
+    local slug="$2"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task poll <repo> <slug>"
+        exit 1
+    fi
+
+    echo "Task poll: $repo/$slug"
+    local role
+    for role in plan-owner-codex plan-review-codex plan-critic-claude implementer-codex implementation-review-codex implementation-critic-claude; do
+        local session_path
+        session_path=$(task_role_session_path "$repo" "$slug" "$role")
+        local session_name
+        session_name=$(to_session_name "$session_path")
+        local backend
+        backend=$(session_backend "$session_name")
+        if [ -z "$backend" ]; then
+            echo "  - $role: not started"
+            continue
+        fi
+        echo "  - $role:"
+        if role_is_pi "$role"; then
+            pi_status "$session_path" --messages 1
+        else
+            local pane_cmd
+            pane_cmd=$(tmux display-message -t "$session_name" -p '#{pane_current_command}' 2>/dev/null || echo "not-running")
+            echo "    session: $session_path"
+            echo "    pane: $pane_cmd"
+        fi
+    done
+}
+
+task_nudge() {
+    local repo="$1"
+    local slug="$2"
+    local role="$3"
+    shift 3
+    local message="$*"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$role" ] || [ -z "$message" ]; then
+        echo "Usage: dev task nudge <repo> <slug> <role> <message>"
+        exit 1
+    fi
+
+    echo "Last status before nudge:"
+    if role_is_pi "$role"; then
+        pi_status "$(task_role_session_path "$repo" "$slug" "$role")" --messages 1
+    else
+        local session_path
+        local session_name
+        session_path=$(task_role_session_path "$repo" "$slug" "$role")
+        session_name=$(to_session_name "$session_path")
+        local pane_cmd
+        pane_cmd=$(tmux display-message -t "$session_name" -p '#{pane_current_command}' 2>/dev/null || echo "not-running")
+        echo "  role: $role"
+        echo "  session: $session_path"
+        echo "  pane: $pane_cmd"
+    fi
+    echo ""
+    task_send "$repo" "$slug" "$role" "$message"
+}
+
+task_extract_verification_commands() {
+    local file="$1"
+    awk '
+        BEGIN { in_block = 0 }
+        /^```(bash|sh)?[[:space:]]*$/ { if (in_block == 0) { in_block = 1; next } else { in_block = 0; next } }
+        in_block == 1 { print }
+    ' "$file"
+}
+
+task_slice_extract_verification_commands() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    task_extract_verification_commands "$(task_slice_dir "$repo" "$slug" "$slice_id")/verification.md"
+}
+
+task_slice_has_verified_findings() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+
+    local verified
+    verified=$(grep -Ei '^\s*-\s*\[(confirmed|rejected|partially_applied)\]' "$file" | \
+        grep -Evi 'Describe a finding you independently verified and how you addressed it\.|Describe a finding you checked and rejected, with rationale\.|Describe any finding you applied only in part, with rationale\.' || true)
+    [ -n "$verified" ]
+}
+
+task_slice_validation_failures_json() {
+    if [ $# -eq 0 ]; then
+        echo "[]"
+        return
+    fi
+    printf '%s\n' "$@" | jq -R . | jq -s '.'
+}
+
+task_slice_scope_entries() {
+    local file="$1"
+    task_section_body "$file" "Scope / Files" | \
+        sed -E 's/^[[:space:]]*[-*][[:space:]]*//' | \
+        sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | \
+        sed -E '/^[[:space:]]*$/d'
+}
+
+task_slice_file_in_scope() {
+    local changed_file="$1"
+    shift
+    local scope
+    for scope in "$@"; do
+        [ -n "$scope" ] || continue
+        if [ "$scope" = "." ] || [ "$scope" = "*" ]; then
+            return 0
+        fi
+        case "$changed_file" in
+            "$scope"|"$scope"/*)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+task_target_git_dir() {
+    local repo="$1"
+    local slug="$2"
+    local target_dir
+    target_dir=$(task_target_dir "$repo" "$slug" "implementer-codex")
+    if [ -z "$target_dir" ]; then
+        target_dir=$(repo_base_dir "$repo")
+    fi
+    echo "$target_dir"
+}
+
+task_git_main_ref() {
+    local target_dir="$1"
+    if git -C "$target_dir" rev-parse --verify main >/dev/null 2>&1; then
+        echo "main"
+        return
+    fi
+    if git -C "$target_dir" rev-parse --verify origin/main >/dev/null 2>&1; then
+        echo "origin/main"
+        return
+    fi
+    echo ""
+}
+
+task_slice_verify_commit_against_git() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local commit_ref="$4"
+
+    local target_dir
+    target_dir=$(task_target_git_dir "$repo" "$slug")
+    if [ ! -d "$target_dir" ]; then
+        echo "missing_target_dir:$target_dir"
+        return 1
+    fi
+
+    if ! git -C "$target_dir" rev-parse --verify "${commit_ref}^{commit}" >/dev/null 2>&1; then
+        echo "missing_commit:$commit_ref"
+        return 1
+    fi
+
+    if ! git -C "$target_dir" merge-base --is-ancestor "$commit_ref" HEAD >/dev/null 2>&1; then
+        echo "commit_not_on_current_head:$commit_ref"
+        return 1
+    fi
+
+    local main_ref
+    main_ref=$(task_git_main_ref "$target_dir")
+    if [ -n "$main_ref" ] && git -C "$target_dir" merge-base --is-ancestor "$commit_ref" "$main_ref" >/dev/null 2>&1; then
+        echo "commit_not_new_relative_to_$main_ref:$commit_ref"
+        return 1
+    fi
+
+    local slice_file
+    slice_file="$(task_slice_dir "$repo" "$slug" "$slice_id")/slice.md"
+    local scopes=()
+    local scope_entry
+    while IFS= read -r scope_entry; do
+        [ -n "$scope_entry" ] || continue
+        scopes+=("$scope_entry")
+    done < <(task_slice_scope_entries "$slice_file")
+    if [ ${#scopes[@]} -eq 0 ]; then
+        echo "missing_scope_entries:slice.md"
+        return 1
+    fi
+
+    local changed_file
+    while IFS= read -r changed_file; do
+        [ -n "$changed_file" ] || continue
+        if ! task_slice_file_in_scope "$changed_file" "${scopes[@]}"; then
+            echo "out_of_scope_commit_file:$changed_file"
+            return 1
+        fi
+    done < <(git -C "$target_dir" diff-tree --no-commit-id --name-only -r "$commit_ref")
+
+    return 0
+}
+
+task_git_worktree_clean() {
+    local target_dir="$1"
+    [ -d "$target_dir" ] || return 1
+    [ -z "$(git -C "$target_dir" status --porcelain 2>/dev/null)" ]
+}
+
+task_git_changed_files() {
+    local target_dir="$1"
+    git -C "$target_dir" status --porcelain | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if [[ "$line" =~ ^\?\?[[:space:]]+ ]]; then
+            echo "${line#?? }"
+        else
+            echo "${line:3}"
+        fi
+    done | sed '/^[[:space:]]*$/d'
+}
+
+task_verify() {
+    local repo="$1"
+    local slug="$2"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task verify <repo> <slug>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local dir
+    dir=$(task_dir "$repo" "$slug")
+    local verify_file="$dir/verification-contract.md"
+    if [ ! -f "$verify_file" ]; then
+        echo "Verification contract not found: $verify_file"
+        exit 1
+    fi
+
+    local target_dir
+    target_dir=$(task_target_dir "$repo" "$slug" "implementer-codex")
+    if [ -z "$target_dir" ]; then
+        target_dir=$(repo_base_dir "$repo")
+    fi
+
+    local commands
+    commands=$(task_extract_verification_commands "$verify_file")
+    if [ -z "$commands" ]; then
+        echo "No fenced bash/sh commands found in $verify_file"
+        exit 1
+    fi
+
+    local failures=()
+    local executed=()
+    local cmd
+    while IFS= read -r cmd; do
+        [ -z "$cmd" ] && continue
+        [[ "$cmd" =~ ^[[:space:]]*# ]] && continue
+        executed+=("$cmd")
+        echo "Running: $cmd"
+        if ! (cd "$target_dir" && bash -lc "$cmd"); then
+            failures+=("$cmd")
+        fi
+    done <<< "$commands"
+
+    local executed_json failures_json
+    executed_json=$(printf '%s\n' "${executed[@]}" | jq -R . | jq -s '.')
+    if [ ${#failures[@]} -gt 0 ]; then
+        failures_json=$(printf '%s\n' "${failures[@]}" | jq -R . | jq -s '.')
+    else
+        failures_json='[]'
+    fi
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local tmp
+    tmp=$(mktemp)
+    jq \
+        --arg now "$now" \
+        --arg targetDir "$target_dir" \
+        --argjson executed "$executed_json" \
+        --argjson failures "$failures_json" \
+        '
+        .verification.lastRun = {
+          at: $now,
+          targetDir: $targetDir,
+          commands: $executed,
+          failures: $failures,
+          success: (($failures | length) == 0)
+        }
+        ' \
+        "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+
+    if [ ${#failures[@]} -eq 0 ]; then
+        echo "Verification passed: $repo/$slug"
+        return 0
+    fi
+
+    echo "Verification failed: $repo/$slug"
+    printf '  - %s\n' "${failures[@]}"
+    return 1
+}
+
+start_or_attach_command_session() {
+    local session_path="$1"
+    local target_dir="$2"
+    local command_line="$3"
+
+    local session_name
+    session_name=$(to_session_name "$session_path")
+    local display_name
+    display_name=$(to_display_name "$session_name")
+
+    if [ ! -d "$target_dir" ]; then
+        echo "Directory not found: $target_dir"
+        exit 1
+    fi
+
+    cd "$target_dir"
+    echo -e "Directory: ${CYAN}$target_dir${RESET}"
+    echo -e "Session: ${GREEN}$display_name${RESET}"
+
+    local backend
+    backend=$(session_backend "$session_name")
+
+    if [ "$backend" = "tmux" ]; then
+        local pane_cmd
+        pane_cmd=$(tmux display-message -t "$session_name" -p '#{pane_current_command}' 2>/dev/null || true)
+        if [[ "$pane_cmd" == "zsh" || "$pane_cmd" == "bash" || "$pane_cmd" == "sh" || "$pane_cmd" == "fish" ]]; then
+            echo -e "${YELLOW}Agent not running — restarting...${RESET}"
+            tmux send-keys -t "$session_name" "$command_line" C-m
+        fi
+        tmux attach -t "$session_name"
+        return
+    fi
+
+    tmux new-session -d -s "$session_name" -c "$target_dir"
+    tmux send-keys -t "$session_name" "$command_line" C-m
+    echo -e "${GREEN}Started:${RESET} $display_name (detached)"
+    echo -e "Attach with: ${CYAN}dev $display_name${RESET}"
+}
+
+task_role_open() {
+    local repo="$1"
+    local slug="$2"
+    local role="${3:-plan-owner-codex}"
+
+    if [ -z "$repo" ] || [ -z "$slug" ] || [ -z "$role" ]; then
+        echo "Usage: dev task open <repo> <slug> [role]"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local target_dir
+    target_dir=$(task_target_dir "$repo" "$slug" "$role")
+    if [ -z "$target_dir" ]; then
+        echo "Role $role requires a worktree. Run: dev task start-impl $repo $slug"
+        exit 1
+    fi
+
+    local worktree
+    worktree=$(jq -r '.worktree // empty' "$meta_file" 2>/dev/null)
+    local session_path
+    if [[ "$role" == implementer-codex || "$role" == implementation-review-codex || "$role" == implementation-critic-claude ]]; then
+        session_path=$(task_session_path "$repo" "$slug" "$role" "$worktree")
+    else
+        session_path=$(task_session_path "$repo" "$slug" "$role")
+    fi
+
+    local session_dir
+    session_dir=$(task_session_dir "$repo" "$slug" "$role")
+    mkdir -p "$session_dir"
+
+    local command_line
+    command_line=$(role_default_command "$role" "$session_dir") || {
+        echo "Unknown task role: $role"
+        exit 1
+    }
+
+    start_or_attach_command_session "$session_path" "$target_dir" "$command_line"
+}
+
+task_new() {
+    local repo="$1"
+    local slug="$2"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task new <repo> <slug>"
+        exit 1
+    fi
+
+    local base_dir
+    base_dir=$(repo_base_dir "$repo")
+    if [ ! -d "$base_dir" ]; then
+        echo "Repo not found: $repo"
+        exit 1
+    fi
+
+    local dir
+    dir=$(task_dir "$repo" "$slug")
+    if [ -d "$dir" ]; then
+        echo "Task already exists: $dir"
+        exit 1
+    fi
+
+    mkdir -p "$dir/$TASK_SESSION_DIR_NAME" "$dir/$TASK_SLICE_DIR_NAME"
+
+    cat > "$dir/task.json" <<EOF
+{
+  "slug": "$slug",
+  "repo": "$repo",
+  "status": "plan_draft",
+  "planLocked": false,
+  "worktree": null,
+  "createdAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "approvals": {
+    "plan": {
+      "plan-review-codex": null,
+      "plan-critic-claude": null
+    },
+    "implementation": {
+      "implementation-review-codex": null,
+      "implementation-critic-claude": null
+    }
+  },
+  "validation": {
+    "plan": {
+      "passed": false,
+      "lastRunAt": null,
+      "failures": []
+    },
+    "implementation": {
+      "passed": false,
+      "lastRunAt": null,
+      "failures": []
+    }
+  },
+  "verification": {
+    "lastRun": {
+      "at": null,
+      "targetDir": null,
+      "commands": [],
+      "failures": [],
+      "success": false
+    }
+  }
+}
+EOF
+
+    cat > "$dir/proposal.md" <<'EOF'
+# Proposal
+
+## Goal
+
+## Why
+
+## Constraints
+
+## Open Questions
+EOF
+
+    cat > "$dir/plan.md" <<'EOF'
+# Plan
+
+## Goal
+
+## Commit Slices
+
+Define every commit slice up front. For non-trivial work, use multiple slices. The plan is not lockable until slices exist under `.cashew/tasks/<slug>/slices/`.
+
+## Non-Goals
+
+## Constraints
+
+## Affected Files / Systems
+
+## Risks
+
+## Acceptance Criteria
+
+## Tests
+
+## Rollout / Rollback
+
+## Open Questions
+EOF
+
+    cat > "$dir/plan-review-codex.md" <<'EOF'
+# Codex Plan Review
+
+Decision: PENDING
+
+## Blocking Issues
+
+- none
+
+## Non-Blocking Concerns
+
+- none
+
+## Sign-off
+
+State approval explicitly here when ready.
+EOF
+
+    cat > "$dir/plan-review-claude.md" <<'EOF'
+# Claude Plan Critique
+
+Decision: PENDING
+
+## Architecture / Risk Issues
+
+- none
+
+## Non-Blocking Concerns
+
+- none
+
+## Sign-off
+
+State approval explicitly here when ready.
+EOF
+
+    cat > "$dir/plan-open-issues.md" <<'EOF'
+# Plan Open Issues
+
+Track open blockers and their resolution here.
+EOF
+
+    cat > "$dir/implementation-notes.md" <<'EOF'
+# Implementation Notes
+
+Track implementation deltas against the locked plan here.
+EOF
+
+    cat > "$dir/implementation-review-codex.md" <<'EOF'
+# Codex Implementation Review
+
+Decision: PENDING
+
+## Blocking Issues
+
+- none
+
+## Non-Blocking Concerns
+
+- none
+
+## Sign-off
+
+State approval explicitly here when ready.
+EOF
+
+    cat > "$dir/implementation-review-claude.md" <<'EOF'
+# Claude Implementation Audit
+
+Decision: PENDING
+
+## Architecture / Risk Issues
+
+- none
+
+## Non-Blocking Concerns
+
+- none
+
+## Sign-off
+
+State approval explicitly here when ready.
+EOF
+
+    cat > "$dir/verification-contract.md" <<'EOF'
+# Verification Contract
+
+Document the target repo's required lint, typecheck, unit, integration, DB integration, live API, build, and migration checks here before implementation.
+EOF
+
+    echo -e "${GREEN}Task created:${RESET} $repo/$slug"
+    echo "Files:"
+    echo "  $dir/proposal.md"
+    echo "  $dir/plan.md"
+    echo "  $dir/plan-review-codex.md"
+    echo "  $dir/plan-review-claude.md"
+    echo "  $dir/slices/"
+    echo ""
+    echo "Next:"
+    echo "  dev task open $repo $slug plan-owner-codex"
+    echo "  dev task open $repo $slug plan-review-codex"
+    echo "  dev task open $repo $slug plan-critic-claude"
+    echo "  dev task slice new $repo $slug slice-01"
+}
+
+task_status() {
+    local repo="$1"
+    local slug="$2"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task status <repo> <slug>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local dir
+    dir=$(task_dir "$repo" "$slug")
+    local status
+    local locked
+    local worktree
+    local plan_validation
+    local impl_validation
+    local plan_codex
+    local plan_claude
+    local impl_codex
+    local impl_claude
+    local verify_ok
+    local verify_at
+    local slice_count
+    status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
+    locked=$(jq -r '.planLocked // false' "$meta_file" 2>/dev/null)
+    worktree=$(jq -r '.worktree // empty' "$meta_file" 2>/dev/null)
+    plan_validation=$(jq -r '.validation.plan.passed // false' "$meta_file" 2>/dev/null)
+    impl_validation=$(jq -r '.validation.implementation.passed // false' "$meta_file" 2>/dev/null)
+    plan_codex=$(jq -r '.approvals.plan["plan-review-codex"].decision // "pending"' "$meta_file" 2>/dev/null)
+    plan_claude=$(jq -r '.approvals.plan["plan-critic-claude"].decision // "pending"' "$meta_file" 2>/dev/null)
+    impl_codex=$(jq -r '.approvals.implementation["implementation-review-codex"].decision // "pending"' "$meta_file" 2>/dev/null)
+    impl_claude=$(jq -r '.approvals.implementation["implementation-critic-claude"].decision // "pending"' "$meta_file" 2>/dev/null)
+    verify_ok=$(jq -r '.verification.lastRun.success // false' "$meta_file" 2>/dev/null)
+    verify_at=$(jq -r '.verification.lastRun.at // empty' "$meta_file" 2>/dev/null)
+    slice_count=$(task_slice_count "$repo" "$slug")
+
+    echo -e "${BOLD}Task:${RESET} $repo/$slug"
+    echo -e "${DIM}Dir:${RESET} $dir"
+    echo -e "${DIM}Status:${RESET} $status"
+    echo -e "${DIM}Plan locked:${RESET} $locked"
+    if [ -n "$worktree" ]; then
+        echo -e "${DIM}Worktree:${RESET} $worktree"
+    fi
+    echo -e "${DIM}Commit slices:${RESET} $slice_count"
+    echo ""
+    echo "Approvals:"
+    echo "  plan-review-codex: $plan_codex"
+    echo "  plan-critic-claude: $plan_claude"
+    echo "  implementation-review-codex: $impl_codex"
+    echo "  implementation-critic-claude: $impl_claude"
+    echo ""
+    echo "Validation:"
+    echo "  plan: $plan_validation"
+    jq -r '.validation.plan.failures[]? // empty' "$meta_file" 2>/dev/null | sed 's/^/    - /'
+    echo "  implementation: $impl_validation"
+    jq -r '.validation.implementation.failures[]? // empty' "$meta_file" 2>/dev/null | sed 's/^/    - /'
+    echo ""
+    echo "Verification:"
+    echo "  success: $verify_ok"
+    if [ -n "$verify_at" ]; then
+        echo "  last run: $verify_at"
+    fi
+    jq -r '.verification.lastRun.failures[]? // empty' "$meta_file" 2>/dev/null | sed 's/^/    - /'
+    echo ""
+    local locked_plan_hash
+    local current_plan_hash
+    locked_plan_hash=$(jq -r '.lock.planHash // empty' "$meta_file" 2>/dev/null)
+    current_plan_hash=$(task_hash_file "$dir/plan.md")
+    echo "Plan lock:"
+    if [ -n "$locked_plan_hash" ]; then
+        if [ "$locked_plan_hash" = "$current_plan_hash" ]; then
+            echo "  drift: false"
+        else
+            echo "  drift: true"
+        fi
+    else
+        echo "  drift: n/a"
+    fi
+    echo ""
+    echo "Slices:"
+    if [ "$slice_count" -gt 0 ]; then
+        local slice_id
+        while IFS= read -r slice_id; do
+            [ -n "$slice_id" ] || continue
+            local slice_meta slice_status slice_approved slice_commit
+            slice_meta=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+            slice_status=$(jq -r '.status // "unknown"' "$slice_meta" 2>/dev/null)
+            slice_approved=$(jq -r '.approvedToCommit // false' "$slice_meta" 2>/dev/null)
+            slice_commit=$(jq -r '.commit // empty' "$slice_meta" 2>/dev/null)
+            if [ -n "$slice_commit" ]; then
+                echo "  - $slice_id [$slice_status, approved=$slice_approved, commit=$slice_commit]"
+            else
+                echo "  - $slice_id [$slice_status, approved=$slice_approved]"
+            fi
+        done < <(task_slice_list "$repo" "$slug")
+    else
+        echo "  - none declared"
+    fi
+    echo ""
+    echo "Next actions:"
+    task_next_actions "$repo" "$slug" | sed 's/^/  - /'
+    echo ""
+    echo "Artifacts:"
+    for f in proposal.md plan.md plan-review-codex.md plan-review-claude.md implementation-notes.md implementation-review-codex.md implementation-review-claude.md verification-contract.md; do
+        if [ -f "$dir/$f" ]; then
+            echo "  - $f"
+        fi
+    done
+    if [ -d "$dir/$TASK_SLICE_DIR_NAME" ]; then
+        echo "  - $TASK_SLICE_DIR_NAME/"
+    fi
+}
+
+task_lock_plan() {
+    local repo="$1"
+    local slug="$2"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task lock-plan <repo> <slug>"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    task_validate_phase "$repo" "$slug" plan || exit 1
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local plan_hash
+    plan_hash=$(task_hash_file "$(task_dir "$repo" "$slug")/plan.md")
+    local tmp
+    tmp=$(mktemp)
+    jq \
+        --arg now "$now" \
+        --arg planHash "$plan_hash" \
+        '
+        .planLocked = true
+        | .status = "plan_locked"
+        | .lock = {
+            lockedAt: $now,
+            planHash: $planHash
+          }
+        ' \
+        "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+    echo "Plan locked: $repo/$slug"
+}
+
+task_start_impl() {
+    local repo="$1"
+    local slug="$2"
+    local branch="${3:-$slug}"
+
+    if [ -z "$repo" ] || [ -z "$slug" ]; then
+        echo "Usage: dev task start-impl <repo> <slug> [worktree]"
+        exit 1
+    fi
+
+    local meta_file
+    meta_file=$(task_meta_file "$repo" "$slug")
+    if [ ! -f "$meta_file" ]; then
+        echo "Task not found: $repo/$slug"
+        exit 1
+    fi
+
+    local locked
+    locked=$(jq -r '.planLocked // false' "$meta_file" 2>/dev/null)
+    if [ "$locked" != "true" ]; then
+        echo "Plan is not locked for $repo/$slug"
+        echo "Run: dev task lock-plan $repo $slug"
+        exit 1
+    fi
+
+    local repo_dir="$PROJECTS_DIR/$repo"
+    if [ -d "$repo_dir/.bare" ] && [ ! -d "$repo_dir/$branch" ]; then
+        add_worktree "$repo" "$branch"
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    jq --arg worktree "$branch" '.worktree = $worktree | .status = "implementation_in_progress"' "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+
+    echo "Implementation worktree ready: $repo/$branch"
+    task_role_open "$repo" "$slug" "implementer-codex"
 }
 
 KW_META_DIR="$HOME/.pi/kw"
@@ -337,6 +2966,7 @@ list_projects() {
                         echo -e "      ${DIM}○${RESET} ${DIM}$wt${RESET}"
                     fi
                 done
+                list_repo_tasks "$project"
             else
                 # Regular repo
                 session_prefix="${project}"
@@ -357,6 +2987,7 @@ list_projects() {
                 else
                     echo -e "  ${DIM}○${RESET} $project"
                 fi
+                list_repo_tasks "$project"
             fi
         done
 
@@ -635,8 +3266,10 @@ add_worktree() {
 
     cd "$repo_dir"
 
-    # Fetch latest
-    git --git-dir=.bare fetch origin
+    # Fetch latest when a remote exists
+    if git --git-dir=.bare remote get-url origin >/dev/null 2>&1; then
+        git --git-dir=.bare fetch origin
+    fi
 
     # Check if branch exists remotely
     if git --git-dir=.bare show-ref --verify --quiet "refs/remotes/origin/$branch"; then
@@ -2645,6 +5278,166 @@ case "${1:-}" in
     "wt"|"worktree")
         add_worktree "$2" "$3" "$4"
         ;;
+    "task")
+        case "${2:-}" in
+            "slice")
+                case "${3:-}" in
+                    "new")
+                        task_slice_new "$4" "$5" "$6"
+                        ;;
+                    "start")
+                        task_slice_start "$4" "$5" "$6"
+                        ;;
+                    "status")
+                        task_slice_status "$4" "$5" "$6"
+                        ;;
+                    "validate")
+                        task_slice_validate "$4" "$5" "$6"
+                        ;;
+                    "request-revision")
+                        task_slice_request_revision "$4" "$5" "$6"
+                        ;;
+                    "reopen")
+                        task_slice_reopen "$4" "$5" "$6"
+                        ;;
+                    "approve-commit")
+                        task_slice_approve_commit "$4" "$5" "$6"
+                        ;;
+                    "committed")
+                        task_slice_committed "$4" "$5" "$6" "$7"
+                        ;;
+                    *)
+                        echo "Usage:"
+                        echo "  dev task slice new <repo> <slug> <slice-id>"
+                        echo "  dev task slice start <repo> <slug> <slice-id>"
+                        echo "  dev task slice status <repo> <slug> <slice-id>"
+                        echo "  dev task slice validate <repo> <slug> <slice-id>"
+                        echo "  dev task slice request-revision <repo> <slug> <slice-id>"
+                        echo "  dev task slice reopen <repo> <slug> <slice-id>"
+                        echo "  dev task slice approve-commit <repo> <slug> <slice-id>"
+                        echo "  dev task slice committed <repo> <slug> <slice-id> <commit>"
+                        exit 1
+                        ;;
+                esac
+                ;;
+            "new")
+                task_new "$3" "$4"
+                ;;
+            "status")
+                task_status "$3" "$4"
+                ;;
+            "sessions")
+                task_sessions "$3" "$4"
+                ;;
+            "open")
+                task_role_open "$3" "$4" "${5:-plan-owner-codex}"
+                ;;
+            "open-current")
+                task_open_current "$3" "$4" "${5:-}"
+                ;;
+            "open-slice")
+                task_open_slice "$3" "$4" "$5" "${6:-implementer-codex}"
+                ;;
+            "lock-plan")
+                task_lock_plan "$3" "$4"
+                ;;
+            "validate")
+                task_validate_phase "$3" "$4" "${5:-plan}"
+                ;;
+            "signoff")
+                task_signoff "$3" "$4" "$5" "$6" "$7" "${8:-}"
+                ;;
+            "send")
+                task_send "$3" "$4" "$5" "${@:6}"
+                ;;
+            "poll")
+                task_poll "$3" "$4"
+                ;;
+            "nudge")
+                task_nudge "$3" "$4" "$5" "${@:6}"
+                ;;
+            "review")
+                task_review "$3" "$4"
+                ;;
+            "verify")
+                task_verify "$3" "$4"
+                ;;
+            "start-impl")
+                task_start_impl "$3" "$4" "$5"
+                ;;
+            "ready-merge")
+                task_mark_ready_merge "$3" "$4"
+                ;;
+            "merged")
+                task_mark_merged "$3" "$4" "$5"
+                ;;
+            "close")
+                task_close "$3" "$4" "$5"
+                ;;
+            *)
+                echo "Usage:"
+                echo "  dev task new <repo> <slug>"
+                echo "  dev task status <repo> <slug>"
+                echo "  dev task sessions <repo> <slug>"
+                echo "  dev task open <repo> <slug> [role]"
+                echo "  dev task open-current <repo> <slug> [role]"
+                echo "  dev task open-slice <repo> <slug> <slice-id> [role]"
+                echo "  dev task slice new <repo> <slug> <slice-id>"
+                echo "  dev task slice start <repo> <slug> <slice-id>"
+                echo "  dev task slice status <repo> <slug> <slice-id>"
+                echo "  dev task slice validate <repo> <slug> <slice-id>"
+                echo "  dev task slice request-revision <repo> <slug> <slice-id>"
+                echo "  dev task slice reopen <repo> <slug> <slice-id>"
+                echo "  dev task slice approve-commit <repo> <slug> <slice-id>"
+                echo "  dev task slice committed <repo> <slug> <slice-id> <commit>"
+                echo "  dev task lock-plan <repo> <slug>"
+                echo "  dev task validate <repo> <slug> [plan|implementation]"
+                echo "  dev task signoff <repo> <slug> <plan|implementation> <role> <approved|blocked|revoked> [note]"
+                echo "  dev task send <repo> <slug> <role> <message>"
+                echo "  dev task poll <repo> <slug>"
+                echo "  dev task nudge <repo> <slug> <role> <message>"
+                echo "  dev task review <repo> <slug>"
+                echo "  dev task verify <repo> <slug>"
+                echo "  dev task start-impl <repo> <slug> [worktree]"
+                echo "  dev task ready-merge <repo> <slug>"
+                echo "  dev task merged <repo> <slug> [merge-ref]"
+                echo "  dev task close <repo> <slug> [--cleanup]"
+                echo ""
+                echo "Roles:"
+                echo "  plan-owner-codex"
+                echo "  plan-review-codex"
+                echo "  plan-critic-claude"
+                echo "  implementer-codex"
+                echo "  implementation-review-codex"
+                echo "  implementation-critic-claude"
+                exit 1
+                ;;
+        esac
+        ;;
+    "project")
+        case "${2:-}" in
+            "tasks")
+                project_tasks_dashboard "$3"
+                ;;
+            "review")
+                project_review "$3"
+                ;;
+            "poll")
+                project_poll "$3"
+                ;;
+            "sessions")
+                project_sessions "$3"
+                ;;
+            *)
+                echo "Usage:"
+                echo "  dev project tasks <repo>"
+                echo "  dev project review <repo>"
+                echo "  dev project poll <repo>"
+                echo "  dev project sessions <repo>"
+                exit 1
+                ;;
+        esac
+        ;;
     "kill")
         if [ -z "$2" ]; then
             echo "Usage: dev kill <session-name>"
@@ -2717,6 +5510,36 @@ case "${1:-}" in
         echo "  dev <repo>/<worktree>/<sub>   Attach to sub-session (prefer /pi for worktrees)"
         echo "  dev new <repo> <git-url>      Clone as worktree-based repo"
         echo "  dev wt <repo> <branch> [base] Add a worktree for branch"
+        echo "  dev project tasks <repo>     Project-level task dashboard"
+        echo "  dev project review <repo>    Project-level orchestrator queue summary"
+        echo "  dev project poll <repo>      Poll all task role lanes in a project"
+        echo "  dev project sessions <repo>  Show all task-role session mappings in a project"
+        echo "  dev task new <repo> <slug>    Create task artifact scaffold"
+        echo "  dev task status <repo> <slug> Show task status + artifacts"
+        echo "  dev task sessions <repo> <slug>  Show role session mappings for a task"
+        echo "  dev task open <repo> <slug> [role]  Open a persistent task role session"
+        echo "  dev task open-current <repo> <slug> [role]  Open the most relevant current role"
+        echo "  dev task open-slice <repo> <slug> <slice-id> [role]  Open a role for the current slice"
+        echo "  dev task slice new <repo> <slug> <slice-id>  Declare a commit slice"
+        echo "  dev task slice start <repo> <slug> <slice-id>  Mark the current slice in implementation"
+        echo "  dev task slice status <repo> <slug> <slice-id>  Show slice lifecycle state"
+        echo "  dev task slice validate <repo> <slug> <slice-id>  Validate one slice"
+        echo "  dev task slice request-revision <repo> <slug> <slice-id>  Move slice back to revision_requested"
+        echo "  dev task slice reopen <repo> <slug> <slice-id>  Reopen the current slice for implementation"
+        echo "  dev task slice approve-commit <repo> <slug> <slice-id>  Approve one slice to commit"
+        echo "  dev task slice committed <repo> <slug> <slice-id> <commit>  Record committed slice"
+        echo "  dev task lock-plan <repo> <slug>    Mark a task plan locked"
+        echo "  dev task validate <repo> <slug> [phase]  Validate task artifacts + approvals"
+        echo "  dev task signoff <repo> <slug> <phase> <role> <decision> [note]  Record review signoff"
+        echo "  dev task send <repo> <slug> <role> <message>  Send to a task role session"
+        echo "  dev task poll <repo> <slug>  Show last status across task roles"
+        echo "  dev task nudge <repo> <slug> <role> <message>  Show status then send a task-role message"
+        echo "  dev task review <repo> <slug>  Show task status plus role-session review"
+        echo "  dev task verify <repo> <slug>  Run verification-contract commands"
+        echo "  dev task start-impl <repo> <slug> [worktree]  Start implementation after plan lock"
+        echo "  dev task ready-merge <repo> <slug>  Mark task ready after implementation validation"
+        echo "  dev task merged <repo> <slug> [merge-ref]  Record merge completion"
+        echo "  dev task close <repo> <slug> [--cleanup]  Close task and optionally cleanup worktree"
         echo "  dev cleanup <repo>/<worktree> Remove worktree + branch + session (use --force if unmerged)"
         echo "  dev kw <repo> <name>          Start knowledge-worker session"
         echo "  dev kw-list [repo]            List knowledge workers"
@@ -2746,6 +5569,36 @@ case "${1:-}" in
         echo "  dev myapp/main/pi             # pi session in main (preferred)"
         echo "  dev myapp/main/claude         # claude session in main"
         echo "  dev wt myapp feature-auth     # create feature branch worktree"
+        echo "  dev project tasks myapp       # project-level dashboard across active tasks"
+        echo "  dev project review myapp      # project queue + next actions"
+        echo "  dev project sessions myapp    # all task-role session mappings"
+        echo "  dev task new myapp auth-v2    # create task artifacts under .cashew/tasks"
+        echo "  dev task sessions myapp auth-v2"
+        echo "  dev task open myapp auth-v2   # open default plan-owner-codex session"
+        echo "  dev task open-current myapp auth-v2"
+        echo "  dev task open myapp auth-v2 plan-review-codex"
+        echo "  dev task open myapp auth-v2 plan-critic-claude"
+        echo "  dev task slice new myapp auth-v2 slice-01"
+        echo "  dev task slice new myapp auth-v2 slice-02"
+        echo "  dev task validate myapp auth-v2 plan"
+        echo "  dev task lock-plan myapp auth-v2"
+        echo "  dev task start-impl myapp auth-v2 auth-v2"
+        echo "  dev task slice start myapp auth-v2 slice-01"
+        echo "  dev task send myapp auth-v2 implementer-codex 'implement the locked plan'"
+        echo "  dev task slice validate myapp auth-v2 slice-01"
+        echo "  dev task open-slice myapp auth-v2 slice-01 implementation-review-codex"
+        echo "  dev task slice approve-commit myapp auth-v2 slice-01"
+        echo "  dev task slice committed myapp auth-v2 slice-01 <commit>"
+        echo "  dev task poll myapp auth-v2"
+        echo "  dev task nudge myapp auth-v2 implementer-codex 'status update and next blocker?'"
+        echo "  dev task review myapp auth-v2"
+        echo "  dev task verify myapp auth-v2"
+        echo "  dev task open myapp auth-v2 implementation-review-codex"
+        echo "  dev task open myapp auth-v2 implementation-critic-claude"
+        echo "  dev task validate myapp auth-v2 implementation"
+        echo "  dev task ready-merge myapp auth-v2"
+        echo "  dev task merged myapp auth-v2"
+        echo "  dev task close myapp auth-v2 --cleanup"
         echo "  dev myapp/feature-auth        # open that worktree"
         echo "  dev myapp/feature-auth/server # sub-session for dev server"
         echo "  dev cleanup myapp/feature-auth # remove worktree + branch + session"
@@ -2762,6 +5615,14 @@ case "${1:-}" in
         echo "  dev queue-status replay/main -m -d       # inspect pending/dead messages"
         echo "  dev reboot --dry-run                     # show sessions to recreate"
         echo "  dev reboot                               # recreate baseline sessions"
+        echo ""
+        echo "Task roles:"
+        echo "  plan-owner-codex              Pinned Pi/Codex planner session"
+        echo "  plan-review-codex             Pinned Pi/Codex reviewer session"
+        echo "  plan-critic-claude            Pinned Claude critic session"
+        echo "  implementer-codex             Pinned Pi/Codex implementer session"
+        echo "  implementation-review-codex   Pinned Pi/Codex implementation reviewer"
+        echo "  implementation-critic-claude  Pinned Claude implementation auditor"
         echo ""
         echo "Reminder: Read the last agent message before nudging:"
         echo "  dev pi-status <session> --messages 1"
