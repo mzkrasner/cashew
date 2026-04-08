@@ -219,12 +219,12 @@ Important:
 - Claude remains the primary orchestrator.
 - each project has its own dedicated orchestrator agent
 - Task-role sessions are persistent support lanes used by the orchestrator.
-- Validation infers approval state from review docs.
+- Validation reads authoritative approval state from structured `.state.json` files. Review markdown remains explanatory.
 - `verification-contract.md` should contain fenced runnable `bash`/`sh` checks for the target repo.
 - The plan is not lockable until at least one commit slice exists.
 - Each slice must pass its own review loop before commit authorization.
 - Slices are sequential. Only the current non-committed slice should move through implementation/review.
-- Reviewer findings are advisory; the implementer must independently verify them and record that verification in the slice's `implementer-response.md`.
+- Reviewer findings are advisory; the implementer must independently verify them and record that verification in the current slice round's `state.json`. `implementer-response.md` remains the narrative explanation.
 - Recording a slice commit is not just bookkeeping; Cashew verifies the commit exists in git and stays within the declared slice scope.
 - project-level commands surface active-task queues, session mappings, and cross-task warnings for shared worktrees, overlapping scopes, and overlapping changed files.
 

@@ -153,6 +153,46 @@ task_slice_dir() {
     echo "$(task_slices_dir "$repo" "$slug")/$slice_id"
 }
 
+task_slice_rounds_dir() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    echo "$(task_slice_dir "$repo" "$slug" "$slice_id")/rounds"
+}
+
+task_slice_round_name() {
+    local round="${1:-1}"
+    printf 'round-%02d' "$round"
+}
+
+task_slice_current_round() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local meta_file
+    meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
+    jq -r '.currentRound // 1' "$meta_file" 2>/dev/null
+}
+
+task_slice_round_dir() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local round="${4:-}"
+    if [ -z "$round" ]; then
+        round=$(task_slice_current_round "$repo" "$slug" "$slice_id")
+    fi
+    echo "$(task_slice_rounds_dir "$repo" "$slug" "$slice_id")/$(task_slice_round_name "$round")"
+}
+
+task_slice_round_state_file() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local round="${4:-}"
+    echo "$(task_slice_round_dir "$repo" "$slug" "$slice_id" "$round")/state.json"
+}
+
 task_slice_meta_file() {
     local repo="$1"
     local slug="$2"
@@ -166,7 +206,7 @@ task_slice_review_doc() {
     local slice_id="$3"
     local reviewer="$4"
     local dir
-    dir=$(task_slice_dir "$repo" "$slug" "$slice_id")
+    dir=$(task_slice_round_dir "$repo" "$slug" "$slice_id")
 
     case "$reviewer" in
         codex)
@@ -179,6 +219,19 @@ task_slice_review_doc() {
             echo ""
             ;;
     esac
+}
+
+task_review_state_file() {
+    local repo="$1"
+    local slug="$2"
+    local phase="$3"
+    local review_doc
+    review_doc=$(task_review_doc "$repo" "$slug" "$phase")
+    if [ -n "$review_doc" ]; then
+        echo "${review_doc%.md}.state.json"
+    else
+        echo ""
+    fi
 }
 
 task_slice_list() {
@@ -427,6 +480,177 @@ task_infer_review_decision() {
     echo "$decision_state"
 }
 
+task_structured_review_decision() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "missing"
+        return
+    fi
+    jq -r '.decision // "missing"' "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]'
+}
+
+task_structured_review_findings_invalid_count() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0"
+        return
+    fi
+    jq -r '
+        [
+          (.blockingFindings // [])[],
+          (.nonBlockingFindings // [])[]
+        ]
+        | map(
+            select(
+              ((.id // "") == "")
+              or ((.title // "") == "")
+              or ((.claim // "") == "")
+              or (((.evidence // []) | length) == 0)
+            )
+          )
+        | length
+    ' "$file" 2>/dev/null
+}
+
+task_structured_review_findings_count() {
+    local file="$1"
+    local key="$2"
+    if [ ! -f "$file" ]; then
+        echo "0"
+        return
+    fi
+    jq -r --arg key "$key" '(.[$key] // []) | length' "$file" 2>/dev/null
+}
+
+task_round_all_finding_ids_json() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "[]"
+        return
+    fi
+    jq -c '
+        [
+          (.reviewerStates.codex.blockingFindings // [])[],
+          (.reviewerStates.codex.nonBlockingFindings // [])[],
+          (.reviewerStates.claude.blockingFindings // [])[],
+          (.reviewerStates.claude.nonBlockingFindings // [])[]
+        ]
+        | map(.id // "")
+        | map(select(. != ""))
+    ' "$file" 2>/dev/null
+}
+
+task_round_invalid_finding_count() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0"
+        return
+    fi
+    jq -r '
+        [
+          (.reviewerStates.codex.blockingFindings // [])[],
+          (.reviewerStates.codex.nonBlockingFindings // [])[],
+          (.reviewerStates.claude.blockingFindings // [])[],
+          (.reviewerStates.claude.nonBlockingFindings // [])[]
+        ]
+        | map(
+            select(
+              ((.id // "") == "")
+              or ((.title // "") == "")
+              or ((.claim // "") == "")
+              or (((.evidence // []) | length) == 0)
+            )
+          )
+        | length
+    ' "$file" 2>/dev/null
+}
+
+task_round_duplicate_finding_ids_count() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0"
+        return
+    fi
+    jq -r '
+        [
+          (.reviewerStates.codex.blockingFindings // [])[],
+          (.reviewerStates.codex.nonBlockingFindings // [])[],
+          (.reviewerStates.claude.blockingFindings // [])[],
+          (.reviewerStates.claude.nonBlockingFindings // [])[]
+        ]
+        | map(.id // "")
+        | map(select(. != ""))
+        | group_by(.)
+        | map(select(length > 1))
+        | length
+    ' "$file" 2>/dev/null
+}
+
+task_round_response_invalid_count() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0"
+        return
+    fi
+    jq -r '
+        (.implementerResponses // [])
+        | map(
+            select(
+              ((.findingId // "") == "")
+              or (
+                (.status // "") != "confirmed"
+                and (.status // "") != "rejected"
+                and (.status // "") != "partially_applied"
+              )
+              or (((.verificationMethod // []) | length) == 0)
+              or (((.evidence // []) | length) == 0)
+              or ((.resolutionSummary // "") == "")
+            )
+          )
+        | length
+    ' "$file" 2>/dev/null
+}
+
+task_round_missing_response_count() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0"
+        return
+    fi
+    jq -r '
+        [
+          (.reviewerStates.codex.blockingFindings // [])[],
+          (.reviewerStates.codex.nonBlockingFindings // [])[],
+          (.reviewerStates.claude.blockingFindings // [])[],
+          (.reviewerStates.claude.nonBlockingFindings // [])[]
+        ] as $findings
+        | ($findings | map(.id // "") | map(select(. != ""))) as $ids
+        | (.implementerResponses // []) as $responses
+        | [ $ids[] | select(($responses | map(.findingId // "")) | index(.) | not) ]
+        | length
+    ' "$file" 2>/dev/null
+}
+
+task_round_orphan_response_count() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0"
+        return
+    fi
+    jq -r '
+        [
+          (.reviewerStates.codex.blockingFindings // [])[],
+          (.reviewerStates.codex.nonBlockingFindings // [])[],
+          (.reviewerStates.claude.blockingFindings // [])[],
+          (.reviewerStates.claude.nonBlockingFindings // [])[]
+        ] as $findings
+        | ($findings | map(.id // "") | map(select(. != ""))) as $ids
+        | (.implementerResponses // [])
+        | map(select(((.findingId // "") != "") and (($ids | index(.findingId // "")) | not)))
+        | length
+    ' "$file" 2>/dev/null
+}
+
 task_phase_required_files() {
     local repo="$1"
     local slug="$2"
@@ -440,14 +664,18 @@ task_phase_required_files() {
                 "$dir/proposal.md" \
                 "$dir/plan.md" \
                 "$dir/plan-review-codex.md" \
+                "$dir/plan-review-codex.state.json" \
                 "$dir/plan-review-claude.md" \
+                "$dir/plan-review-claude.state.json" \
                 "$dir/verification-contract.md"
             ;;
         implementation)
             printf '%s\n' \
                 "$dir/implementation-notes.md" \
                 "$dir/implementation-review-codex.md" \
+                "$dir/implementation-review-codex.state.json" \
                 "$dir/implementation-review-claude.md" \
+                "$dir/implementation-review-claude.state.json" \
                 "$dir/verification-contract.md"
             ;;
         *)
@@ -512,50 +740,116 @@ task_validate_phase() {
     local codex_note=""
     local claude_note=""
     if [ "$phase" = "plan" ]; then
-        local plan_codex_doc plan_claude_doc
-        plan_codex_doc=$(task_review_doc "$repo" "$slug" "plan-codex")
-        plan_claude_doc=$(task_review_doc "$repo" "$slug" "plan-claude")
-        codex_decision=$(task_infer_review_decision "$plan_codex_doc" "Blocking Issues")
-        claude_decision=$(task_infer_review_decision "$plan_claude_doc" "Architecture / Risk Issues")
-        codex_note="inferred from plan-review-codex.md"
-        claude_note="inferred from plan-review-claude.md"
+        local plan_codex_state plan_claude_state
+        plan_codex_state=$(task_review_state_file "$repo" "$slug" "plan-codex")
+        plan_claude_state=$(task_review_state_file "$repo" "$slug" "plan-claude")
+        codex_decision=$(task_structured_review_decision "$plan_codex_state")
+        claude_decision=$(task_structured_review_decision "$plan_claude_state")
+        codex_note="read from $(basename "$plan_codex_state")"
+        claude_note="read from $(basename "$plan_claude_state")"
+
+        if [ ! -f "$plan_codex_state" ]; then
+            failures+=("missing:$(basename "$plan_codex_state")")
+        fi
+        if [ ! -f "$plan_claude_state" ]; then
+            failures+=("missing:$(basename "$plan_claude_state")")
+        fi
+        if [ -f "$plan_codex_state" ] && [ "$(task_structured_review_findings_invalid_count "$plan_codex_state")" -gt 0 ]; then
+            failures+=("invalid_review_state:$(basename "$plan_codex_state")")
+        fi
+        if [ -f "$plan_claude_state" ] && [ "$(task_structured_review_findings_invalid_count "$plan_claude_state")" -gt 0 ]; then
+            failures+=("invalid_review_state:$(basename "$plan_claude_state")")
+        fi
 
         case "$codex_decision" in
-            approved) ;;
-            blocked) failures+=("review_blockers:plan-review-codex.md") ;;
+            approved)
+                if [ "$(task_structured_review_findings_count "$plan_codex_state" "blockingFindings")" -gt 0 ]; then
+                    failures+=("review_state_conflict:$(basename "$plan_codex_state")")
+                fi
+                ;;
+            blocked)
+                if [ "$(task_structured_review_findings_count "$plan_codex_state" "blockingFindings")" -lt 1 ]; then
+                    failures+=("missing_blocking_findings:$(basename "$plan_codex_state")")
+                else
+                    failures+=("review_blockers:plan-review-codex.md")
+                fi
+                ;;
             pending) failures+=("review_decision_pending:plan-review-codex.md") ;;
-            invalid) failures+=("review_decision_invalid:plan-review-codex.md") ;;
-            missing) failures+=("missing:plan-review-codex.md") ;;
+            invalid) failures+=("review_decision_invalid:$(basename "$plan_codex_state")") ;;
+            missing) failures+=("missing_decision:$(basename "$plan_codex_state")") ;;
         esac
         case "$claude_decision" in
-            approved) ;;
-            blocked) failures+=("review_blockers:plan-review-claude.md") ;;
+            approved)
+                if [ "$(task_structured_review_findings_count "$plan_claude_state" "blockingFindings")" -gt 0 ]; then
+                    failures+=("review_state_conflict:$(basename "$plan_claude_state")")
+                fi
+                ;;
+            blocked)
+                if [ "$(task_structured_review_findings_count "$plan_claude_state" "blockingFindings")" -lt 1 ]; then
+                    failures+=("missing_blocking_findings:$(basename "$plan_claude_state")")
+                else
+                    failures+=("review_blockers:plan-review-claude.md")
+                fi
+                ;;
             pending) failures+=("review_decision_pending:plan-review-claude.md") ;;
-            invalid) failures+=("review_decision_invalid:plan-review-claude.md") ;;
-            missing) failures+=("missing:plan-review-claude.md") ;;
+            invalid) failures+=("review_decision_invalid:$(basename "$plan_claude_state")") ;;
+            missing) failures+=("missing_decision:$(basename "$plan_claude_state")") ;;
         esac
     else
-        local impl_codex_doc impl_claude_doc
-        impl_codex_doc=$(task_review_doc "$repo" "$slug" "implementation-codex")
-        impl_claude_doc=$(task_review_doc "$repo" "$slug" "implementation-claude")
-        codex_decision=$(task_infer_review_decision "$impl_codex_doc" "Blocking Issues")
-        claude_decision=$(task_infer_review_decision "$impl_claude_doc" "Architecture / Risk Issues")
-        codex_note="inferred from implementation-review-codex.md"
-        claude_note="inferred from implementation-review-claude.md"
+        local impl_codex_state impl_claude_state
+        impl_codex_state=$(task_review_state_file "$repo" "$slug" "implementation-codex")
+        impl_claude_state=$(task_review_state_file "$repo" "$slug" "implementation-claude")
+        codex_decision=$(task_structured_review_decision "$impl_codex_state")
+        claude_decision=$(task_structured_review_decision "$impl_claude_state")
+        codex_note="read from $(basename "$impl_codex_state")"
+        claude_note="read from $(basename "$impl_claude_state")"
+
+        if [ ! -f "$impl_codex_state" ]; then
+            failures+=("missing:$(basename "$impl_codex_state")")
+        fi
+        if [ ! -f "$impl_claude_state" ]; then
+            failures+=("missing:$(basename "$impl_claude_state")")
+        fi
+        if [ -f "$impl_codex_state" ] && [ "$(task_structured_review_findings_invalid_count "$impl_codex_state")" -gt 0 ]; then
+            failures+=("invalid_review_state:$(basename "$impl_codex_state")")
+        fi
+        if [ -f "$impl_claude_state" ] && [ "$(task_structured_review_findings_invalid_count "$impl_claude_state")" -gt 0 ]; then
+            failures+=("invalid_review_state:$(basename "$impl_claude_state")")
+        fi
 
         case "$codex_decision" in
-            approved) ;;
-            blocked) failures+=("review_blockers:implementation-review-codex.md") ;;
+            approved)
+                if [ "$(task_structured_review_findings_count "$impl_codex_state" "blockingFindings")" -gt 0 ]; then
+                    failures+=("review_state_conflict:$(basename "$impl_codex_state")")
+                fi
+                ;;
+            blocked)
+                if [ "$(task_structured_review_findings_count "$impl_codex_state" "blockingFindings")" -lt 1 ]; then
+                    failures+=("missing_blocking_findings:$(basename "$impl_codex_state")")
+                else
+                    failures+=("review_blockers:implementation-review-codex.md")
+                fi
+                ;;
             pending) failures+=("review_decision_pending:implementation-review-codex.md") ;;
-            invalid) failures+=("review_decision_invalid:implementation-review-codex.md") ;;
-            missing) failures+=("missing:implementation-review-codex.md") ;;
+            invalid) failures+=("review_decision_invalid:$(basename "$impl_codex_state")") ;;
+            missing) failures+=("missing_decision:$(basename "$impl_codex_state")") ;;
         esac
         case "$claude_decision" in
-            approved) ;;
-            blocked) failures+=("review_blockers:implementation-review-claude.md") ;;
+            approved)
+                if [ "$(task_structured_review_findings_count "$impl_claude_state" "blockingFindings")" -gt 0 ]; then
+                    failures+=("review_state_conflict:$(basename "$impl_claude_state")")
+                fi
+                ;;
+            blocked)
+                if [ "$(task_structured_review_findings_count "$impl_claude_state" "blockingFindings")" -lt 1 ]; then
+                    failures+=("missing_blocking_findings:$(basename "$impl_claude_state")")
+                else
+                    failures+=("review_blockers:implementation-review-claude.md")
+                fi
+                ;;
             pending) failures+=("review_decision_pending:implementation-review-claude.md") ;;
-            invalid) failures+=("review_decision_invalid:implementation-review-claude.md") ;;
-            missing) failures+=("missing:implementation-review-claude.md") ;;
+            invalid) failures+=("review_decision_invalid:$(basename "$impl_claude_state")") ;;
+            missing) failures+=("missing_decision:$(basename "$impl_claude_state")") ;;
         esac
 
         local locked_plan_hash current_plan_hash
@@ -733,7 +1027,7 @@ task_slice_new() {
 {
   "id": "$safe_id",
   "status": "planned",
-  "reviewRound": 0,
+  "currentRound": 1,
   "approvedToCommit": false,
   "commit": null,
   "validation": {
@@ -757,6 +1051,11 @@ task_slice_new() {
 }
 EOF
 
+    local rounds_dir round_dir
+    rounds_dir="$dir/rounds"
+    round_dir="$rounds_dir/$(task_slice_round_name 1)"
+    mkdir -p "$round_dir"
+
     cat > "$dir/slice.md" <<EOF
 # Slice: $safe_id
 
@@ -771,54 +1070,65 @@ EOF
 ## Verification
 EOF
 
-    cat > "$dir/review-codex.md" <<'EOF'
+    cat > "$round_dir/review-codex.md" <<'EOF'
 # Codex Slice Review
 
-Decision: PENDING
+Use `state.json` in this round directory for the authoritative structured review state.
 
-## Blocking Issues
+## Narrative Review
 
-- none
-
-## Non-Blocking Concerns
-
-- none
-
-## Sign-off
-
-State approval explicitly here when ready.
+Summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
 EOF
 
-    cat > "$dir/review-claude.md" <<'EOF'
+    cat > "$round_dir/review-claude.md" <<'EOF'
 # Claude Slice Critique
 
-Decision: PENDING
+Use `state.json` in this round directory for the authoritative structured review state.
 
-## Architecture / Risk Issues
+## Narrative Review
 
-- none
-
-## Non-Blocking Concerns
-
-- none
-
-## Sign-off
-
-State approval explicitly here when ready.
+Summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
 EOF
 
-    cat > "$dir/implementer-response.md" <<'EOF'
+    cat > "$round_dir/implementer-response.md" <<'EOF'
 # Implementer Response
 
-## Summary
+Use `state.json` in this round directory for the authoritative finding-by-finding verification state.
 
-## Reviewer Findings Verification
-
-- [confirmed] Describe a finding you independently verified and how you addressed it.
-- [rejected] Describe a finding you checked and rejected, with rationale.
-- [partially_applied] Describe any finding you applied only in part, with rationale.
+## Narrative Response
 
 ## Additional Context
+EOF
+
+    cat > "$round_dir/state.json" <<'EOF'
+{
+  "round": 1,
+  "reviewerStates": {
+    "codex": {
+      "decision": "pending",
+      "blockingFindings": [],
+      "nonBlockingFindings": [],
+      "summary": "",
+      "updatedAt": null
+    },
+    "claude": {
+      "decision": "pending",
+      "blockingFindings": [],
+      "nonBlockingFindings": [],
+      "summary": "",
+      "updatedAt": null
+    }
+  },
+  "implementerResponses": [],
+  "verification": {
+    "lastRun": {
+      "at": null,
+      "commands": [],
+      "failures": [],
+      "success": false
+    }
+  }
+}
 EOF
 
     cat > "$dir/verification.md" <<'EOF'
@@ -828,6 +1138,80 @@ Add fenced bash/sh commands for the checks that must pass before this slice may 
 EOF
 
     echo "Slice created: $repo/$slug/$safe_id"
+}
+
+task_slice_create_round() {
+    local repo="$1"
+    local slug="$2"
+    local slice_id="$3"
+    local round="$4"
+
+    local round_dir
+    round_dir=$(task_slice_round_dir "$repo" "$slug" "$slice_id" "$round")
+    mkdir -p "$round_dir"
+
+    cat > "$round_dir/review-codex.md" <<EOF
+# Codex Slice Review
+
+Use \`state.json\` in this round directory for the authoritative structured review state.
+
+## Narrative Review
+
+Round $(task_slice_round_name "$round"): summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
+EOF
+
+    cat > "$round_dir/review-claude.md" <<EOF
+# Claude Slice Critique
+
+Use \`state.json\` in this round directory for the authoritative structured review state.
+
+## Narrative Review
+
+Round $(task_slice_round_name "$round"): summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
+EOF
+
+    cat > "$round_dir/implementer-response.md" <<EOF
+# Implementer Response
+
+Use \`state.json\` in this round directory for the authoritative finding-by-finding verification state.
+
+## Narrative Response
+
+Round $(task_slice_round_name "$round"): summarize what you confirmed, rejected, or only partially applied and why.
+
+## Additional Context
+EOF
+
+    cat > "$round_dir/state.json" <<EOF
+{
+  "round": $round,
+  "reviewerStates": {
+    "codex": {
+      "decision": "pending",
+      "blockingFindings": [],
+      "nonBlockingFindings": [],
+      "summary": "",
+      "updatedAt": null
+    },
+    "claude": {
+      "decision": "pending",
+      "blockingFindings": [],
+      "nonBlockingFindings": [],
+      "summary": "",
+      "updatedAt": null
+    }
+  },
+  "implementerResponses": [],
+  "verification": {
+    "lastRun": {
+      "at": null,
+      "commands": [],
+      "failures": [],
+      "success": false
+    }
+  }
+}
+EOF
 }
 
 task_slice_start() {
@@ -881,7 +1265,11 @@ task_slice_request_revision() {
     local meta_file
     meta_file=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
     [ -f "$meta_file" ] || { echo "Slice not found: $repo/$slug/$slice_id"; exit 1; }
-    task_set_json "$meta_file" '.status = "revision_requested" | .approvedToCommit = false'
+
+    local next_round
+    next_round=$(( $(jq -r '.currentRound // 1' "$meta_file" 2>/dev/null) + 1 ))
+    task_slice_create_round "$repo" "$slug" "$slice_id" "$next_round"
+    task_set_json "$meta_file" ".status = \"revision_requested\" | .approvedToCommit = false | .currentRound = $next_round"
     echo "Slice moved to revision_requested: $repo/$slug/$slice_id"
 }
 
@@ -922,17 +1310,20 @@ task_slice_status() {
 
     local dir
     dir=$(task_slice_dir "$repo" "$slug" "$slice_id")
-    local status round approved commit verify_ok
+    local round
+    round=$(jq -r '.currentRound // 1' "$meta_file" 2>/dev/null)
+    local round_state
+    round_state=$(task_slice_round_state_file "$repo" "$slug" "$slice_id" "$round")
+    local status approved commit verify_ok
     status=$(jq -r '.status // "unknown"' "$meta_file" 2>/dev/null)
-    round=$(jq -r '.reviewRound // 0' "$meta_file" 2>/dev/null)
     approved=$(jq -r '.approvedToCommit // false' "$meta_file" 2>/dev/null)
     commit=$(jq -r '.commit // empty' "$meta_file" 2>/dev/null)
-    verify_ok=$(jq -r '.verification.lastRun.success // false' "$meta_file" 2>/dev/null)
+    verify_ok=$(jq -r ".verification.lastRun.success // false" "$meta_file" 2>/dev/null)
 
     echo -e "${BOLD}Slice:${RESET} $repo/$slug/$slice_id"
     echo -e "${DIM}Dir:${RESET} $dir"
     echo -e "${DIM}Status:${RESET} $status"
-    echo -e "${DIM}Review round:${RESET} $round"
+    echo -e "${DIM}Current round:${RESET} $(task_slice_round_name "$round")"
     echo -e "${DIM}Approved to commit:${RESET} $approved"
     echo -e "${DIM}Verification success:${RESET} $verify_ok"
     if [ -n "$commit" ]; then
@@ -940,8 +1331,8 @@ task_slice_status() {
     fi
     echo ""
     echo "Approvals:"
-    echo "  review-codex: $(jq -r '.approvals["review-codex"].decision // "pending"' "$meta_file" 2>/dev/null)"
-    echo "  review-claude: $(jq -r '.approvals["review-claude"].decision // "pending"' "$meta_file" 2>/dev/null)"
+    echo "  review-codex: $(jq -r '.reviewerStates.codex.decision // "pending"' "$round_state" 2>/dev/null)"
+    echo "  review-claude: $(jq -r '.reviewerStates.claude.decision // "pending"' "$round_state" 2>/dev/null)"
     echo ""
     echo "Validation:"
     echo "  passed: $(jq -r '.validation.passed // false' "$meta_file" 2>/dev/null)"
@@ -969,40 +1360,88 @@ task_slice_validate() {
 
     local dir
     dir=$(task_slice_dir "$repo" "$slug" "$slice_id")
+    local round
+    round=$(jq -r '.currentRound // 1' "$meta_file" 2>/dev/null)
+    local round_dir round_state
+    round_dir=$(task_slice_round_dir "$repo" "$slug" "$slice_id" "$round")
+    round_state=$(task_slice_round_state_file "$repo" "$slug" "$slice_id" "$round")
     local failures=()
 
     local f
-    for f in slice.md review-codex.md review-claude.md implementer-response.md verification.md; do
+    for f in slice.md verification.md; do
         if [ ! -f "$dir/$f" ]; then
             failures+=("missing:$f")
         elif ! task_file_has_meaningful_content "$dir/$f"; then
             failures+=("placeholder:$f")
         fi
     done
+    for f in review-codex.md review-claude.md implementer-response.md state.json; do
+        if [ ! -f "$round_dir/$f" ]; then
+            failures+=("missing:$(task_slice_round_name "$round")/$f")
+        elif [ "$f" != "state.json" ] && ! task_file_has_meaningful_content "$round_dir/$f"; then
+            failures+=("placeholder:$(task_slice_round_name "$round")/$f")
+        fi
+    done
 
-    local codex_doc claude_doc codex_decision claude_decision
-    codex_doc=$(task_slice_review_doc "$repo" "$slug" "$slice_id" codex)
-    claude_doc=$(task_slice_review_doc "$repo" "$slug" "$slice_id" claude)
-    codex_decision=$(task_infer_review_decision "$codex_doc" "Blocking Issues")
-    claude_decision=$(task_infer_review_decision "$claude_doc" "Architecture / Risk Issues")
+    local codex_decision claude_decision
+    codex_decision=$(jq -r '.reviewerStates.codex.decision // "missing"' "$round_state" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    claude_decision=$(jq -r '.reviewerStates.claude.decision // "missing"' "$round_state" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+    if [ -f "$round_state" ]; then
+        if [ "$(task_round_invalid_finding_count "$round_state")" -gt 0 ]; then
+            failures+=("invalid_round_findings:$(task_slice_round_name "$round")/state.json")
+        fi
+        if [ "$(task_round_duplicate_finding_ids_count "$round_state")" -gt 0 ]; then
+            failures+=("duplicate_finding_ids:$(task_slice_round_name "$round")/state.json")
+        fi
+        if [ "$(task_round_response_invalid_count "$round_state")" -gt 0 ]; then
+            failures+=("invalid_implementer_responses:$(task_slice_round_name "$round")/state.json")
+        fi
+        if [ "$(task_round_missing_response_count "$round_state")" -gt 0 ]; then
+            failures+=("missing_implementer_responses:$(task_slice_round_name "$round")/state.json")
+        fi
+        if [ "$(task_round_orphan_response_count "$round_state")" -gt 0 ]; then
+            failures+=("orphan_implementer_responses:$(task_slice_round_name "$round")/state.json")
+        fi
+    fi
 
     case "$codex_decision" in
-        approved) ;;
-        blocked) failures+=("review_blockers:review-codex.md") ;;
-        pending) failures+=("review_decision_pending:review-codex.md") ;;
-        invalid) failures+=("review_decision_invalid:review-codex.md") ;;
-        missing) failures+=("missing:review-codex.md") ;;
+        approved)
+            if [ "$(jq -r '(.reviewerStates.codex.blockingFindings // []) | length' "$round_state" 2>/dev/null)" -gt 0 ]; then
+                failures+=("review_state_conflict:$(task_slice_round_name "$round")/state.json:codex")
+            fi
+            ;;
+        blocked)
+            if [ "$(jq -r '(.reviewerStates.codex.blockingFindings // []) | length' "$round_state" 2>/dev/null)" -lt 1 ]; then
+                failures+=("missing_blocking_findings:$(task_slice_round_name "$round")/state.json:codex")
+            else
+                failures+=("review_blockers:$(task_slice_round_name "$round")/review-codex.md")
+            fi
+            ;;
+        pending) failures+=("review_decision_pending:$(task_slice_round_name "$round")/state.json:codex") ;;
+        missing) failures+=("missing_decision:$(task_slice_round_name "$round")/state.json:codex") ;;
+        *) failures+=("review_decision_invalid:$(task_slice_round_name "$round")/state.json:codex") ;;
     esac
     case "$claude_decision" in
-        approved) ;;
-        blocked) failures+=("review_blockers:review-claude.md") ;;
-        pending) failures+=("review_decision_pending:review-claude.md") ;;
-        invalid) failures+=("review_decision_invalid:review-claude.md") ;;
-        missing) failures+=("missing:review-claude.md") ;;
+        approved)
+            if [ "$(jq -r '(.reviewerStates.claude.blockingFindings // []) | length' "$round_state" 2>/dev/null)" -gt 0 ]; then
+                failures+=("review_state_conflict:$(task_slice_round_name "$round")/state.json:claude")
+            fi
+            ;;
+        blocked)
+            if [ "$(jq -r '(.reviewerStates.claude.blockingFindings // []) | length' "$round_state" 2>/dev/null)" -lt 1 ]; then
+                failures+=("missing_blocking_findings:$(task_slice_round_name "$round")/state.json:claude")
+            else
+                failures+=("review_blockers:$(task_slice_round_name "$round")/review-claude.md")
+            fi
+            ;;
+        pending) failures+=("review_decision_pending:$(task_slice_round_name "$round")/state.json:claude") ;;
+        missing) failures+=("missing_decision:$(task_slice_round_name "$round")/state.json:claude") ;;
+        *) failures+=("review_decision_invalid:$(task_slice_round_name "$round")/state.json:claude") ;;
     esac
 
-    if ! task_slice_has_verified_findings "$dir/implementer-response.md"; then
-        failures+=("missing_verified_review_feedback:implementer-response.md")
+    if [ ! -f "$round_state" ]; then
+        failures+=("missing:$(task_slice_round_name "$round")/state.json")
     fi
 
     local target_dir
@@ -1089,10 +1528,27 @@ task_slice_validate() {
             failures: $verifyFailures,
             success: (($verifyFailures | length) == 0)
           }
-        | .reviewRound = ((.reviewRound // 0) + 1)
         | .status = (if ($failures | length) == 0 then "in_review" else "revision_requested" end)
         ' \
         "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+
+    if [ -f "$round_state" ]; then
+        local round_tmp
+        round_tmp=$(mktemp)
+        jq \
+            --arg now "$now" \
+            --argjson executed "$executed_json" \
+            --argjson verifyFailures "$verify_failures_json" \
+            '
+            .verification.lastRun = {
+              at: $now,
+              commands: $executed,
+              failures: $verifyFailures,
+              success: (($verifyFailures | length) == 0)
+            }
+            ' \
+            "$round_state" > "$round_tmp" && mv "$round_tmp" "$round_state"
+    fi
 
     if [ ${#failures[@]} -eq 0 ]; then
         echo "Slice validation passed: $repo/$slug/$slice_id"
@@ -1842,8 +2298,8 @@ task_review() {
         local slice_meta slice_status round
         slice_meta=$(task_slice_meta_file "$repo" "$slug" "$slice_id")
         slice_status=$(jq -r '.status // "unknown"' "$slice_meta" 2>/dev/null)
-        round=$(jq -r '.reviewRound // 0' "$slice_meta" 2>/dev/null)
-        echo "  - $slice_id: $slice_status (reviewRound=$round)"
+        round=$(jq -r '.currentRound // 1' "$slice_meta" 2>/dev/null)
+        echo "  - $slice_id: $slice_status (currentRound=$(task_slice_round_name "$round"))"
     done < <(task_slice_list "$repo" "$slug")
     echo ""
     echo "Role session review:"
@@ -2082,7 +2538,7 @@ task_slice_verify_commit_against_git() {
 task_git_worktree_clean() {
     local target_dir="$1"
     [ -d "$target_dir" ] || return 1
-    [ -z "$(git -C "$target_dir" status --porcelain 2>/dev/null)" ]
+    [ -z "$(task_git_changed_files "$target_dir")" ]
 }
 
 task_git_changed_files() {
@@ -2094,7 +2550,7 @@ task_git_changed_files() {
         else
             echo "${line:3}"
         fi
-    done | sed '/^[[:space:]]*$/d'
+    done | sed '/^[[:space:]]*$/d' | grep -Ev '^\.cashew(/|$)' || true
 }
 
 task_verify() {
@@ -2207,6 +2663,11 @@ start_or_attach_command_session() {
     local backend
     backend=$(session_backend "$session_name")
 
+    local can_attach=0
+    if [ -t 0 ] && [ -t 1 ]; then
+        can_attach=1
+    fi
+
     if [ "$backend" = "tmux" ]; then
         local pane_cmd
         pane_cmd=$(tmux display-message -t "$session_name" -p '#{pane_current_command}' 2>/dev/null || true)
@@ -2214,7 +2675,12 @@ start_or_attach_command_session() {
             echo -e "${YELLOW}Agent not running — restarting...${RESET}"
             tmux send-keys -t "$session_name" "$command_line" C-m
         fi
-        tmux attach -t "$session_name"
+        if [ "$can_attach" -eq 1 ]; then
+            tmux attach -t "$session_name"
+        else
+            echo -e "${GREEN}Running:${RESET} $display_name (detached)"
+            echo -e "Attach with: ${CYAN}dev $display_name${RESET}"
+        fi
         return
     fi
 
@@ -2378,37 +2844,43 @@ EOF
     cat > "$dir/plan-review-codex.md" <<'EOF'
 # Codex Plan Review
 
-Decision: PENDING
+Use `plan-review-codex.state.json` for the authoritative structured review state.
 
-## Blocking Issues
+## Narrative Review
 
-- none
+Summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
+EOF
 
-## Non-Blocking Concerns
-
-- none
-
-## Sign-off
-
-State approval explicitly here when ready.
+    cat > "$dir/plan-review-codex.state.json" <<'EOF'
+{
+  "reviewerRole": "plan-review-codex",
+  "decision": "pending",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "summary": "",
+  "updatedAt": null
+}
 EOF
 
     cat > "$dir/plan-review-claude.md" <<'EOF'
 # Claude Plan Critique
 
-Decision: PENDING
+Use `plan-review-claude.state.json` for the authoritative structured review state.
 
-## Architecture / Risk Issues
+## Narrative Review
 
-- none
+Summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
+EOF
 
-## Non-Blocking Concerns
-
-- none
-
-## Sign-off
-
-State approval explicitly here when ready.
+    cat > "$dir/plan-review-claude.state.json" <<'EOF'
+{
+  "reviewerRole": "plan-critic-claude",
+  "decision": "pending",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "summary": "",
+  "updatedAt": null
+}
 EOF
 
     cat > "$dir/plan-open-issues.md" <<'EOF'
@@ -2426,37 +2898,43 @@ EOF
     cat > "$dir/implementation-review-codex.md" <<'EOF'
 # Codex Implementation Review
 
-Decision: PENDING
+Use `implementation-review-codex.state.json` for the authoritative structured review state.
 
-## Blocking Issues
+## Narrative Review
 
-- none
+Summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
+EOF
 
-## Non-Blocking Concerns
-
-- none
-
-## Sign-off
-
-State approval explicitly here when ready.
+    cat > "$dir/implementation-review-codex.state.json" <<'EOF'
+{
+  "reviewerRole": "implementation-review-codex",
+  "decision": "pending",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "summary": "",
+  "updatedAt": null
+}
 EOF
 
     cat > "$dir/implementation-review-claude.md" <<'EOF'
 # Claude Implementation Audit
 
-Decision: PENDING
+Use `implementation-review-claude.state.json` for the authoritative structured review state.
 
-## Architecture / Risk Issues
+## Narrative Review
 
-- none
+Summarize reasoning, evidence, tradeoffs, and any context around the findings recorded in the state file.
+EOF
 
-## Non-Blocking Concerns
-
-- none
-
-## Sign-off
-
-State approval explicitly here when ready.
+    cat > "$dir/implementation-review-claude.state.json" <<'EOF'
+{
+  "reviewerRole": "implementation-critic-claude",
+  "decision": "pending",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "summary": "",
+  "updatedAt": null
+}
 EOF
 
     cat > "$dir/verification-contract.md" <<'EOF'
@@ -2590,7 +3068,7 @@ task_status() {
     task_next_actions "$repo" "$slug" | sed 's/^/  - /'
     echo ""
     echo "Artifacts:"
-    for f in proposal.md plan.md plan-review-codex.md plan-review-claude.md implementation-notes.md implementation-review-codex.md implementation-review-claude.md verification-contract.md; do
+    for f in proposal.md plan.md plan-review-codex.md plan-review-codex.state.json plan-review-claude.md plan-review-claude.state.json implementation-notes.md implementation-review-codex.md implementation-review-codex.state.json implementation-review-claude.md implementation-review-claude.state.json verification-contract.md; do
         if [ -f "$dir/$f" ]; then
             echo "  - $f"
         fi

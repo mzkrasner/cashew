@@ -92,8 +92,8 @@ For non-trivial features, use task artifacts and persistent task-role sessions i
    dev task open <repo> <slug> plan-review-codex
    dev task open <repo> <slug> plan-critic-claude
    ```
-3. As the orchestrator, iterate on `.cashew/tasks/<slug>/plan.md`, the declared slice definitions under `.cashew/tasks/<slug>/slices/`, `plan-review-codex.md`, `plan-review-claude.md`, and `plan-open-issues.md` until blockers are resolved.
-   Validation infers approval state from the review docs. Use explicit signoff only if you need a manual override:
+3. As the orchestrator, iterate on `.cashew/tasks/<slug>/plan.md`, the declared slice definitions under `.cashew/tasks/<slug>/slices/`, the narrative review docs, and the structured review state files until blockers are resolved.
+   Validation reads authoritative review state from the `.state.json` files. Use explicit signoff only if you need a manual override:
    ```bash
    dev task validate <repo> <slug> plan
    ```
@@ -128,7 +128,7 @@ For non-trivial features, use task artifacts and persistent task-role sessions i
    dev task slice approve-commit <repo> <slug> <slice-id>
    dev task slice committed <repo> <slug> <slice-id> <commit>
    ```
-   The implementer must independently verify reviewer claims before applying them. Reviewer findings are advisory. The implementer records confirmed, rejected, or partially-applied findings in `implementer-response.md`.
+   The implementer must independently verify reviewer claims before applying them. Reviewer findings are advisory. The authoritative per-finding responses live in the slice round's `state.json`; `implementer-response.md` is the narrative explanation.
    Slices progress sequentially. Only the current non-committed slice should be in active implementation/review.
 8. Before merge, run implementation review explicitly:
    ```bash

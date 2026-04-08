@@ -199,11 +199,14 @@ Cashew enforces this by making slices first-class:
 
 Each slice lives under:
 - `.cashew/tasks/<slug>/slices/<slice-id>/slice.md`
-- `.cashew/tasks/<slug>/slices/<slice-id>/review-codex.md`
-- `.cashew/tasks/<slug>/slices/<slice-id>/review-claude.md`
-- `.cashew/tasks/<slug>/slices/<slice-id>/implementer-response.md`
 - `.cashew/tasks/<slug>/slices/<slice-id>/verification.md`
 - `.cashew/tasks/<slug>/slices/<slice-id>/status.json`
+- `.cashew/tasks/<slug>/slices/<slice-id>/rounds/round-01/review-codex.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/rounds/round-01/review-claude.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/rounds/round-01/implementer-response.md`
+- `.cashew/tasks/<slug>/slices/<slice-id>/rounds/round-01/state.json`
+
+Slice review rounds are append-only. When a slice is sent back for revision, Cashew advances to a new round directory and keeps prior rounds intact.
 
 Declare slices explicitly:
 ```bash
@@ -267,7 +270,7 @@ dev task close <repo> <slug> [--cleanup]
 `dev task ready-merge` validates implementation artifacts and approvals before moving the task to `ready_to_merge`.
 It also refuses to proceed until every declared slice is in `committed`.
 
-`dev task signoff ...` is still available as a manual override, but the normal path is to let `dev task validate ...` infer approval state directly from the review documents.
+`dev task signoff ...` is still available as a manual override, but the normal path is to let `dev task validate ...` read authoritative review state from the structured state files.
 
 After the real merge occurs, record it explicitly with `dev task merged ...`, then close the lifecycle with `dev task close ...`.
 
@@ -321,8 +324,9 @@ The slice is the commit checkpoint. The orchestrator should run this loop until 
 
 Important:
 - reviewer findings are advisory, not automatically true
-- `implementer-response.md` must explicitly record independently verified reviewer feedback
-- vague “fixed everything” text is not sufficient; use explicit `[confirmed]`, `[rejected]`, or `[partially_applied]` bullets
+- each slice round has authoritative structured state in `rounds/<round>/state.json`
+- reviewer markdown files are explanatory; state transitions come from structured fields in `state.json`
+- the implementer must respond to each finding ID in `implementerResponses`
 - `dev task slice committed ...` verifies the commit exists, is on the current worktree HEAD path, is new relative to `main` when available, and only touches files declared in the slice scope
 - implementation validation also requires a clean worktree before merge readiness
 
@@ -346,31 +350,74 @@ These commands surface:
   - overlapping declared slice scopes
   - overlapping changed files across active tasks
 
-## Review Doc Contract
+## Structured Review State
 
-Review docs are now schema-like enough that validation depends on them.
+Review markdown is narrative only. Authoritative machine state now lives in JSON files.
 
-Required pattern:
-```md
-# ...
+Task-level reviews:
+- `.cashew/tasks/<slug>/plan-review-codex.state.json`
+- `.cashew/tasks/<slug>/plan-review-claude.state.json`
+- `.cashew/tasks/<slug>/implementation-review-codex.state.json`
+- `.cashew/tasks/<slug>/implementation-review-claude.state.json`
 
-Decision: PENDING|APPROVED|BLOCKED
+Slice-level reviews:
+- `.cashew/tasks/<slug>/slices/<slice-id>/rounds/<round>/state.json`
 
-## Blocking Issues
-- none
-
-## Non-Blocking Concerns
-- none
-
-## Sign-off
-State approval explicitly here when ready.
+Required task-level state shape:
+```json
+{
+  "decision": "pending",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "summary": "",
+  "updatedAt": null
+}
 ```
 
-Validation behavior:
-- `Decision: APPROVED` + no blocking content => approval inferred
-- `Decision: BLOCKED` => validation fails
-- `Decision: PENDING` => validation fails
-- meaningful content in blocking sections => validation fails
+Required slice round state shape:
+```json
+{
+  "round": 1,
+  "reviewerStates": {
+    "codex": {
+      "decision": "pending",
+      "blockingFindings": [],
+      "nonBlockingFindings": [],
+      "summary": "",
+      "updatedAt": null
+    },
+    "claude": {
+      "decision": "pending",
+      "blockingFindings": [],
+      "nonBlockingFindings": [],
+      "summary": "",
+      "updatedAt": null
+    }
+  },
+  "implementerResponses": [],
+  "verification": {
+    "lastRun": {
+      "at": null,
+      "commands": [],
+      "failures": [],
+      "success": false
+    }
+  }
+}
+```
+
+Each finding must have:
+- `id`
+- `title`
+- `claim`
+- `evidence`
+
+Each implementer response must include:
+- `findingId`
+- `status` as `confirmed`, `rejected`, or `partially_applied`
+- `verificationMethod`
+- `evidence`
+- `resolutionSummary`
 
 ## Worktree Workflow
 
