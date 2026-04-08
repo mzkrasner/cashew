@@ -21,6 +21,7 @@ current Cashew model.
 | dev script | `/usr/local/bin/dev` → `bin/dev` | Project session manager |
 | cashew launcher | `/usr/local/bin/cashew` → `bin/cashew` | tmux + fzf TUI launcher |
 | Global Claude config | `~/.claude/CLAUDE.md` | Cashew context block replaced in-place between markers |
+| /setup command | `~/.claude/commands/setup.md` → `claude/commands/setup.md` | Entry point that invokes the authoritative setup skill |
 | /dev command | `~/.claude/commands/dev.md` → `claude/commands/dev.md` | Session manager docs |
 | /codex-review command | `~/.claude/commands/codex-review.md` → `claude/commands/codex-review.md` | Stateless final Codex review |
 | /cashew-feedback command | `~/.claude/commands/cashew-feedback.md` → `claude/commands/cashew-feedback.md` | Local-only Cashew workflow feedback capture |
@@ -102,8 +103,9 @@ Replace the Cashew context block inside `~/.claude/CLAUDE.md` if present,
 otherwise append it. This must be update-in-place so existing users receive new
 workflow guidance.
 
-The setup skill itself is NOT symlinked. It lives in `.claude/skills/` and is
-only available when Claude is in this repo.
+The setup skill remains in `.claude/skills/` in this repo. The global
+`/setup` command is now just a stable entrypoint that points Claude at this
+skill.
 
 ```bash
 CASHEW_ROOT="$(git rev-parse --show-toplevel)"
@@ -133,6 +135,7 @@ else:
 PY
 
 # Global commands
+ln -sf "$CASHEW_ROOT/claude/commands/setup.md" ~/.claude/commands/setup.md
 ln -sf "$CASHEW_ROOT/claude/commands/dev.md" ~/.claude/commands/dev.md
 ln -sf "$CASHEW_ROOT/claude/commands/codex-review.md" ~/.claude/commands/codex-review.md
 ln -sf "$CASHEW_ROOT/claude/commands/cashew-feedback.md" ~/.claude/commands/cashew-feedback.md
@@ -209,6 +212,7 @@ pi --version
 codex --version || echo "Codex CLI not installed — /codex-review will be unavailable"
 ls -l ~/.pi/agent/extensions/
 ls -l ~/.claude/commands/dev.md
+ls -l ~/.claude/commands/setup.md
 ls -l ~/.claude/commands/codex-review.md
 ls -l ~/.claude/commands/cashew-feedback.md
 ls -l ~/.claude/skills/prompting-worktree-agents

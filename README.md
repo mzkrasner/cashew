@@ -305,11 +305,12 @@ cashew/
 ├── .claude/
 │   └── skills/
 │       └── setup/
-│           └── SKILL.md         # /setup skill for bootstrapping
+│           └── SKILL.md         # authoritative setup skill
 ├── claude/
 │   ├── global/
 │   │   └── CLAUDE.md            # Global context for all Claude sessions
 │   ├── commands/
+│   │   ├── setup.md             # /setup command entrypoint
 │   │   ├── dev.md               # /dev command
 │   │   └── codex-review.md      # Stateless final Codex review
 │   └── skills/
