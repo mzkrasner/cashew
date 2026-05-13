@@ -13,7 +13,7 @@
  *   {"message": "text", "mode": "steer"}
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
 
 export default function (pi: ExtensionAPI) {

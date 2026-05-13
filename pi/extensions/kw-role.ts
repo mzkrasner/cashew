@@ -5,7 +5,7 @@
  * Enabled when PI_ROLE=knowledge-worker or PI_KW_ROLE=1 is set.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync } from "fs";
 
 const ROLE_MARKER = "knowledge-worker";

@@ -170,7 +170,7 @@ This is a constraint of session naming, not a feature. If it breaks for you, cha
 3. **Optional: install Pi + queue/subscribe/knowledge-worker extensions**:
    ```bash
    CASHEW_ROOT="$(git rev-parse --show-toplevel)"
-   npm install -g @mariozechner/pi-coding-agent
+   npm install -g @earendil-works/pi-coding-agent
    mkdir -p ~/.pi/agent/extensions
    ln -sf "$CASHEW_ROOT/pi/extensions/message-queue.ts" ~/.pi/agent/extensions/message-queue.ts
    ln -sf "$CASHEW_ROOT/pi/extensions/pi-subscribe.ts" ~/.pi/agent/extensions/pi-subscribe.ts
@@ -183,9 +183,9 @@ This is a constraint of session naming, not a feature. If it breaks for you, cha
    ```bash
    export CASHEW_PROJECTS_DIR=...
    export CASHEW_CODEX_PROVIDER=openai
-   export CASHEW_CODEX_MODEL=gpt-5.4
+   export CASHEW_CODEX_MODEL=gpt-5.5
    export CASHEW_CODEX_THINKING=high
-   export CASHEW_CLAUDE_MODEL=<your-claude-alias>
+   export CASHEW_CLAUDE_MODEL=claude-opus-4-7[1m]
    ```
    The core serious-task path uses Pi-backed Codex roles, so no separate global Codex config file is required for that path.
 

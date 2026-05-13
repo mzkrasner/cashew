@@ -355,7 +355,7 @@ role_default_command() {
     local session_dir="$2"
 
     local codex_provider="${CASHEW_CODEX_PROVIDER:-openai}"
-    local codex_model="${CASHEW_CODEX_MODEL:-gpt-5.4}"
+    local codex_model="${CASHEW_CODEX_MODEL:-gpt-5.5}"
     local codex_thinking="${CASHEW_CODEX_THINKING:-high}"
     local claude_model="${CASHEW_CLAUDE_MODEL:-}"
 

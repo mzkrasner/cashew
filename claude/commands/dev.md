@@ -283,7 +283,7 @@ Task roles are pinned by role rather than left to ambient machine defaults.
 Current defaults:
 - Codex roles use Pi with:
   - `--provider ${CASHEW_CODEX_PROVIDER:-openai}`
-  - `--model ${CASHEW_CODEX_MODEL:-gpt-5.4}`
+  - `--model ${CASHEW_CODEX_MODEL:-gpt-5.5}`
   - `--thinking ${CASHEW_CODEX_THINKING:-high}`
   - `--session-dir <task role session dir>`
 - Claude roles use:

@@ -73,7 +73,7 @@ end = "# <<< CASHEW ENV <<<"
 block = f"""{begin}
 export CASHEW_PROJECTS_DIR="$HOME/<projects-folder>"
 export CASHEW_CODEX_PROVIDER="${{CASHEW_CODEX_PROVIDER:-openai}}"
-export CASHEW_CODEX_MODEL="${{CASHEW_CODEX_MODEL:-gpt-5.4}}"
+export CASHEW_CODEX_MODEL="${{CASHEW_CODEX_MODEL:-gpt-5.5}}"
 export CASHEW_CODEX_THINKING="${{CASHEW_CODEX_THINKING:-high}}"
 <claude-model-env-line>
 {end}
@@ -149,7 +149,7 @@ ln -sf "$CASHEW_ROOT/claude/skills/repo-quality-rails-setup" ~/.claude/skills/re
 
 ## Step 6: Install Pi Extensions
 
-Pi must be installed (`npm install -g @mariozechner/pi-coding-agent`). If `pi`
+Pi must be installed (`npm install -g @earendil-works/pi-coding-agent`). If `pi`
 isn't on the PATH, install it first.
 
 These extensions enable `dev send-pi` messaging, pub/sub coordination, and
@@ -161,7 +161,7 @@ plugins there.
 CASHEW_ROOT="$(git rev-parse --show-toplevel)"
 
 # Install Pi if missing
-command -v pi || npm install -g @mariozechner/pi-coding-agent
+command -v pi || npm install -g @earendil-works/pi-coding-agent
 
 mkdir -p ~/.pi/agent/extensions
 # Only add Cashew symlinks; leave any existing extensions intact.

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // Deprecated. pi-web-access should be installed as a Pi package via:
 //   pi install npm:pi-web-access
